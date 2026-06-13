@@ -86,8 +86,26 @@ python3 -m unittest discover -s tests -v
 - [x] S1 感知层（CC 额度）— 本机实测跑通
 - [x] S2 规则判断 + 去重
 - [x] S3 飞书卡片（机制 A：`__claude_cb` 回调）— 本机真发到群验证
-- [x] S4 反向动作（开 → 预热）— handler 就位，dry-run 验证；待真点击端到端联调
-- [ ] S5 launchd 常驻 + 联调
+- [x] S4 反向动作（开 → 预热）— handler 真跑验证（预热+回执），待真点击验回传
+- [x] S5 launchd 常驻 — 已安装，launchd 受限环境下感知+推送实测跑通
+
+## S5 · launchd 部署
+
+```bash
+bash deploy/install.sh      # 生成并加载 ~/Library/LaunchAgents/com.quota-butler.plist
+bash deploy/uninstall.sh    # 卸载（保留代码与配置）
+launchctl list | grep com.quota-butler   # 看状态（第二列=上次退出码）
+tail -f quota-butler.log    # 看运行日志
+```
+
+**launchd 环境两个必填坑（本机 env -i 实测复现）**，install.sh 已自动处理：
+
+| 坑 | 现象 | 解法 |
+|----|------|------|
+| PATH 不含 `/usr/local/bin` | `lark-cli`/`claude` FileNotFoundError | plist 注入 PATH |
+| 缺 `LARK_CHANNEL` | lark-cli 回退默认 app，报 230002「Bot can NOT be out of the chat」 | plist 注入 `LARK_CHANNEL`（默认 1）|
+
+> 改了 `config.yaml` 的 `interval_min` 后需重跑 `install.sh` 才生效（间隔写死在 plist）。
 
 ## ⚠️ 红线
 
