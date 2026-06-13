@@ -86,8 +86,10 @@ python3 -m unittest discover -s tests -v
 - [x] S1 感知层（CC 额度）— 本机实测跑通
 - [x] S2 规则判断 + 去重
 - [x] S3 飞书卡片（机制 A：`__claude_cb` 回调）— 本机真发到群验证
-- [x] S4 反向动作（开 → 预热）— handler 真跑验证（预热+回执），待真点击验回传
+- [x] S4 反向动作（开 → 预热）— 预热+回执真跑；bridge `[card-click]` 回传经真点击验证
 - [x] S5 launchd 常驻 — 已安装，launchd 受限环境下感知+推送实测跑通
+
+**✅ MVP1 完成线达成**：感知（真打接口）→ 提醒（真发卡）→ 拍板（真点击，bridge 回传成立）→ 代执行（skip 真静默 / warmup 真预热）全链路真实验证。
 
 ## S5 · launchd 部署
 
