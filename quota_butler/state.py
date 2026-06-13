@@ -4,7 +4,9 @@
   last_run_at            上次运行时间（ISO8601）
   last_utilization       上次读到的 5h 利用率
   last_reset_at          上次读到的 5h resets_at
-  last_notified_reset_at 上次「已推送提醒」对应的 resets_at —— 去重的关键
+  last_notified_reset_at 上次「已推送提醒」对应的 resets_at —— 推送去重的关键
+  last_warmed_reset_at   上次「已点开预热」对应的 resets_at —— 防重复预热
+  last_action            上次回调动作（warmup / skip），便于日志追溯
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ class State:
     last_utilization: Optional[float] = None
     last_reset_at: Optional[str] = None
     last_notified_reset_at: Optional[str] = None
+    last_warmed_reset_at: Optional[str] = None
+    last_action: Optional[str] = None
 
 
 def load(path: str) -> State:
