@@ -42,6 +42,7 @@ from . import state as state_mod
 from .notify import push_receipt, NotifyError
 from .providers import get_provider
 from .providers.base import ProviderError
+from .window import same_window
 
 DEFAULT_CONFIG = "~/.quota-butler/config.yaml"
 
@@ -66,8 +67,8 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         state_mod.save(cfg.resolved_state_path, st)
         return 1
 
-    # 防重复预热：同窗口已开过就不再烧 token
-    if resets_at and st.last_warmed_reset_at == resets_at:
+    # 防重复预热：同窗口已开过就不再烧 token（容差比较，resets_at 微秒会漂移）
+    if resets_at and same_window(st.last_warmed_reset_at, resets_at):
         msg = "ℹ️ 该窗口已经开过了，不重复预热"
         print(f"[回调] {msg}")
         _safe_receipt(msg, cfg, dry_run)
