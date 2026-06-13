@@ -6,4 +6,5 @@ venv/
 config.yaml
 state.json
 *.local.yaml
+*.log
 .DS_Store
