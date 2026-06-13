@@ -80,7 +80,8 @@ def push_card(usage: Usage, decision: Decision, config: Config,
     if target_args is None:
         raise NotifyError("config.feishu 未配置 chat_id / user_id，无处可推")
 
-    cmd = ["lark-cli", "im", "+messages-send",
+    # 必须以 bot 身份发；user 身份缺 im:message.send_as_user scope
+    cmd = ["lark-cli", "im", "+messages-send", "--as", "bot",
            *target_args, "--msg-type", "interactive", "--content", card_json]
 
     try:
