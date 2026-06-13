@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd 模板 · 每 INTERVAL 秒拉起一次 quota_butler.main，跑完即退。
+  安装：
+    1) 把 __PYTHON__ / __REPO__ 换成实际路径
+    2) cp 到 ~/Library/LaunchAgents/com.quota-butler.plist
+    3) launchctl load ~/Library/LaunchAgents/com.quota-butler.plist
+  卸载：
+    launchctl unload ~/Library/LaunchAgents/com.quota-butler.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.quota-butler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>quota_butler.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- 每 300 秒（5 分钟）拉起一次 -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/quota-butler.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/quota-butler.err.log</string>
+</dict>
+</plist>

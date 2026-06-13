@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+# 本地配置 / 状态绝不入库（含 chat_id 等）
+config.yaml
+state.json
+*.local.yaml
+.DS_Store

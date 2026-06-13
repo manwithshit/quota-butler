@@ -1,0 +1,31 @@
+# 额度管家 quota-butler · 配置示例
+# 复制到 ~/.quota-butler/config.yaml 后按需修改。
+# 装了 PyYAML 用标准 YAML；没装也能跑（内置极简解析，仅支持本文件这种简单结构）。
+
+# launchd 拉起间隔（分钟）。仅作记录；真实间隔在 plist 里设。
+interval_min: 5
+
+# 主规则：距 5h 窗口 reset 小于这么多分钟 → 触发提醒。
+# 联调时把它调大（如 600）即可让下一次轮询当场命中。
+reset_soon_min: 20
+
+# 可选叠加（防浪费）：利用率低于此值才提醒；留空 = 关闭。
+# waste_pct: 50
+
+# 预热用哪个 provider：cc（默认）/ codex。
+# ⚠️ 6/15 起 CC `claude -p` 独立计费；切 codex 走订阅不计费。
+warmup_provider: cc
+
+# 预热消息内容（越短越省）。
+warmup_prompt: say hi
+
+# 静音：true 时只感知+判断，不推送（调试用）。
+muted: false
+
+# 状态文件路径。
+state_path: ~/.quota-butler/state.json
+
+# 飞书推送目标。chat_id 优先；没填 chat_id 则用 user_id 私聊。
+feishu:
+  chat_id: oc_xxxxxxxxxxxxxxxx
+  user_id: ""
