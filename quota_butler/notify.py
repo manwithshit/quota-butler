@@ -93,6 +93,26 @@ def push_card(usage: Usage, decision: Decision, config: Config,
     return out.stdout.strip()
 
 
+def push_receipt(text: str, config: Config, dry_run: bool = False) -> Optional[str]:
+    """S4 回执：点「开」预热后往群里回一条纯文本结果（✅ 已开窗 / ❌ 失败）。"""
+    if dry_run:
+        print(f"[dry-run] 回执：{text}")
+        return None
+    target_args = _target_args(config)
+    if target_args is None:
+        raise NotifyError("config.feishu 未配置 chat_id / user_id，无处可回执")
+    content = json.dumps({"text": text}, ensure_ascii=False)
+    cmd = ["lark-cli", "im", "+messages-send", "--as", "bot",
+           *target_args, "--msg-type", "text", "--content", content]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (subprocess.SubprocessError, OSError) as e:
+        raise NotifyError(f"调用 lark-cli 失败: {e}") from e
+    if out.returncode != 0:
+        raise NotifyError(f"lark-cli 退出码 {out.returncode}: {out.stderr.strip()[:200]}")
+    return out.stdout.strip()
+
+
 def _target_args(config: Config):
     if config.feishu.chat_id:
         return ["--chat-id", config.feishu.chat_id]
