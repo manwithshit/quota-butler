@@ -25,6 +25,7 @@ quota-butler/
 │   │   ├── base.py          # Provider 接口 + Usage 数据结构
 │   │   └── claude.py        # CC 实现：read_usage() / warmup()
 │   ├── rules.py             # 触发规则 + 去重
+│   ├── window.py            # 窗口同一性判断（resets_at 微秒漂移容差，共享）
 │   ├── notify.py            # 飞书卡片 + 回执（lark-cli, --as bot）
 │   ├── main.py              # 感知端入口：感知→判断→推送
 │   └── handler.py           # S4 回调处理器：承接点击→预热→回执

@@ -14,6 +14,7 @@ from typing import Optional
 from .config import Config
 from .providers.base import Usage
 from .state import State
+from .window import same_window
 
 
 @dataclass
@@ -49,8 +50,8 @@ def should_notify(usage: Usage, state: State, config: Config,
             minutes,
         )
 
-    # 去重：同一个 resets_at 已经提醒过
-    if state.last_notified_reset_at and _same_window(
+    # 去重：同一个 resets_at 已经提醒过（容差比较，微秒会漂移）
+    if state.last_notified_reset_at and same_window(
         state.last_notified_reset_at, resets_at
     ):
         return Decision(False, "该窗口已提醒过（去重）", minutes)
@@ -60,13 +61,3 @@ def should_notify(usage: Usage, state: State, config: Config,
         f"5h 窗口 {minutes:.0f} 分钟后重置，已用 {five.utilization:.0f}%",
         minutes,
     )
-
-
-def _same_window(stored_iso: str, resets_at: datetime) -> bool:
-    try:
-        stored = datetime.fromisoformat(stored_iso)
-    except ValueError:
-        return False
-    if stored.tzinfo is None:
-        stored = stored.replace(tzinfo=timezone.utc)
-    return abs((stored - resets_at).total_seconds()) < 1.0
