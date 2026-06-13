@@ -74,6 +74,28 @@ class TestHandler(unittest.TestCase):
         rc = handler.handle({"action": "bogus"}, config_path=self.cfg_path)
         self.assertEqual(rc, 1)
 
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_warmup_failure_sends_error_receipt(self, get_provider, push_receipt):
+        # S4-6：预热失败 → 返回非零 + 发「❌ 失败」回执，不吞错
+        from quota_butler.providers.base import ProviderError
+        fake = mock.Mock()
+        fake.warmup.side_effect = ProviderError("claude -p 退出码 1: boom")
+        get_provider.return_value = fake
+
+        rc = handler.handle(
+            {"action": "warmup", "resets_at": "2026-06-13T12:00:00+00:00"},
+            config_path=self.cfg_path,
+        )
+        self.assertEqual(rc, 3)
+        push_receipt.assert_called_once()
+        self.assertIn("❌", push_receipt.call_args[0][0])
+
+        # 失败后不应记成"已预热"，以便后续可重试
+        from quota_butler import state as state_mod
+        st = state_mod.load(self.state_path)
+        self.assertIsNone(st.last_warmed_reset_at)
+
 
 if __name__ == "__main__":
     unittest.main()

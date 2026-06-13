@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -138,6 +139,18 @@ class ClaudeProvider(Provider):
         return out.stdout.strip()[:200]
 
 
+_FRAC_RE = re.compile(r"\.(\d+)")
+
+
 def _parse_dt(value: str) -> datetime:
-    """解析 ISO8601（带时区，含微秒）。Python 3.9 的 fromisoformat 已够用。"""
-    return datetime.fromisoformat(value)
+    """解析 ISO8601（带时区）。
+
+    Python 3.9 的 fromisoformat 很挑：只吃自己 isoformat() 的输出——不认 'Z' 后缀，
+    也只认 3/6 位小数秒。真实 API 现在给 6 位微秒能跑，但这里做规整以防格式漂移
+    （'Z' → '+00:00'，小数秒补/截成 6 位）。
+    """
+    v = value.strip()
+    if v.endswith(("Z", "z")):
+        v = v[:-1] + "+00:00"
+    v = _FRAC_RE.sub(lambda m: "." + (m.group(1) + "000000")[:6], v, count=1)
+    return datetime.fromisoformat(v)
