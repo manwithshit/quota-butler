@@ -23,12 +23,14 @@ quota-butler/
 │   ├── state.py             # JSON 状态读写
 │   ├── providers/
 │   │   ├── base.py          # Provider 接口 + Usage 数据结构
-│   │   └── claude.py        # CC 实现：read_usage() / warmup()
+│   │   ├── claude.py        # CC 实现：read_usage() / warmup()
+│   │   └── codex.py         # Codex 实现：read_usage()（仅感知）
 │   ├── rules.py             # 触发规则 + 去重
 │   ├── window.py            # 窗口同一性判断（resets_at 微秒漂移容差，共享）
-│   ├── notify.py            # 飞书卡片 + 回执（lark-cli, --as bot）
+│   ├── notify.py            # 飞书提醒卡 / 回执 / 状态卡（lark-cli, --as bot）
 │   ├── main.py              # 感知端入口：感知→判断→推送
-│   └── handler.py           # S4 回调处理器：承接点击→预热→回执
+│   ├── handler.py           # S4 回调处理器：承接点击→预热→回执
+│   └── query.py             # 群聊查询：读 CC+Codex 额度→回状态卡
 ├── config.example.yaml
 ├── deploy/com.quota-butler.plist  # launchd 模板
 └── tests/
@@ -59,6 +61,8 @@ python3 -m unittest discover -s tests -v
 | `... --config PATH` | 指定配置文件 |
 | `python3 -m quota_butler.handler '<payload>'` | S4：承接卡片点击 → 预热 → 回执 |
 | `... handler --dry-run '<payload>'` | 模拟点击，**不真烧 token、不真发飞书** |
+| `python3 -m quota_butler.query` | 群聊主动查询：读 CC+Codex 当前额度 → 回状态卡 |
+| `... query --dry-run` | 只打印状态卡，**不真发飞书** |
 
 ## S4 · 回调闭环（点「开」→ 预热）
 
@@ -108,6 +112,23 @@ tail -f quota-butler.log    # 看运行日志
 | 缺 `LARK_CHANNEL` | lark-cli 回退默认 app，报 230002「Bot can NOT be out of the chat」 | plist 注入 `LARK_CHANNEL`（默认 1）|
 
 > 改了 `config.yaml` 的 `interval_min` 后需重跑 `install.sh` 才生效（间隔写死在 plist）。
+
+## 群聊主动查询 + Codex 监控
+
+除了「到点主动喊你」，还能**你主动问**：群里发触发词（状态 / 额度 / quota）→
+承接侧调 `python3 -m quota_butler.query` → 回一张状态卡（CC + Codex 一起）。
+把单向推送变成可问可答，正好补「飞书 push 不如菜单栏一眼可见」那块短板。
+
+- **Codex 仅感知不预热**：免费档窗口是「月度」不是 5h，无窗口可换挡；且 token 刷新
+  会烧月度额度。`codex.py` 只实现 `read_usage()`，`warmup()` 抛 NotImplementedError。
+- **窗口标签自适应**：`window_seconds` 区分 5h 窗口 / 7天窗口 / 月度额度，卡片如实标注。
+- 触发词 → 命令的路由在 bridge / 承接侧配置（与 handler 的 `[card-click]` 契约同理）。
+
+## 频率与安静时段
+
+- 轮询默认 **15 分钟**（5h 窗口不需要更密；只要 < `reset_soon_min` 就能在重置前命中）。
+- 推送有去重：**一个窗口最多 1 条**，5 分钟轮询≠5 分钟推送。
+- `quiet_hours`（本地时间，支持跨午夜如 23:00–08:00）：区间内命中也不推，免半夜打扰。
 
 ## ⚠️ 红线
 
