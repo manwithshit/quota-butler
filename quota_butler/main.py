@@ -51,8 +51,12 @@ def run(config_path: str, dry_run: bool = False, force: bool = False) -> int:
     st.last_utilization = five.utilization
     st.last_reset_at = five.resets_at.isoformat()
 
-    # ③ 推送
-    if decision.notify and not cfg.muted:
+    # ③ 推送（静音 / 安静时段 都跳过，但仍写状态）
+    if decision.notify and cfg.muted:
+        print("[推送] 已静音（muted），跳过")
+    elif decision.notify and cfg.is_quiet(now):
+        print("[推送] 安静时段，跳过")
+    elif decision.notify:
         try:
             push_card(usage, decision, cfg, dry_run=dry_run)
             if not dry_run:
@@ -62,8 +66,6 @@ def run(config_path: str, dry_run: bool = False, force: bool = False) -> int:
             print(f"[推送失败] {e}", file=sys.stderr)
             state_mod.save(cfg.resolved_state_path, st)
             return 3
-    elif cfg.muted and decision.notify:
-        print("[推送] 已静音（muted），跳过")
 
     state_mod.save(cfg.resolved_state_path, st)
     return 0

@@ -16,6 +16,7 @@ class WindowUsage:
     """一个额度窗口的快照。"""
     utilization: float            # 已用百分比 0–100
     resets_at: datetime           # 该窗口重置的绝对时间（带时区）
+    window_seconds: Optional[int] = None  # 窗口时长（秒），用于区分 5h / 7天 / 月度
 
 
 @dataclass

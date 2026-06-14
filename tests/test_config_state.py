@@ -3,9 +3,11 @@
 import os
 import tempfile
 import unittest
+from datetime import time as dtime
 
 from quota_butler import config as config_mod
 from quota_butler import state as state_mod
+from quota_butler.config import QuietHours
 from quota_butler.state import State
 
 SAMPLE = """\
@@ -59,6 +61,33 @@ class TestState(unittest.TestCase):
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")
         self.assertIsNone(st.last_notified_reset_at)
+
+
+class TestQuietHours(unittest.TestCase):
+    def test_same_day_range(self):
+        q = QuietHours("01:00", "06:00")
+        self.assertTrue(q.contains(dtime(3, 0)))
+        self.assertTrue(q.contains(dtime(1, 0)))     # 左闭
+        self.assertFalse(q.contains(dtime(6, 0)))    # 右开
+        self.assertFalse(q.contains(dtime(7, 0)))
+
+    def test_cross_midnight(self):
+        q = QuietHours("23:00", "08:00")
+        self.assertTrue(q.contains(dtime(23, 30)))
+        self.assertTrue(q.contains(dtime(2, 0)))
+        self.assertFalse(q.contains(dtime(9, 0)))
+        self.assertFalse(q.contains(dtime(22, 0)))
+
+    def test_disabled_when_empty(self):
+        self.assertFalse(QuietHours("", "").contains(dtime(3, 0)))
+        self.assertFalse(QuietHours("23:00", "").contains(dtime(23, 30)))
+
+    def test_parsed_from_config(self):
+        text = 'reset_soon_min: 20\nquiet_hours:\n  start: "23:00"\n  end: "08:00"\n'
+        cfg = config_mod.from_dict(config_mod._tiny_yaml(text))
+        self.assertTrue(cfg.quiet_hours.enabled)
+        self.assertEqual(cfg.quiet_hours.start, "23:00")
+        self.assertTrue(cfg.quiet_hours.contains(dtime(2, 0)))
 
 
 if __name__ == "__main__":

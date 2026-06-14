@@ -4,7 +4,7 @@
 #
 # 它做的事：
 #   1. 解析 python3 / lark-cli / claude 的真实路径，拼出 launchd 需要的 PATH
-#   2. 从 ~/.quota-butler/config.yaml 读 interval_min（没有就默认 5 分钟）
+#   2. 从 ~/.quota-butler/config.yaml 读 interval_min（没有就默认 15 分钟）
 #   3. 用模板生成 ~/Library/LaunchAgents/com.quota-butler.plist
 #   4. load 进 launchd（先 unload 旧的，幂等）
 set -euo pipefail
@@ -32,7 +32,7 @@ command -v claude   >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 clau
 LARK_CHANNEL_VAL="${LARK_CHANNEL:-1}"
 
 # --- 2. 读 interval（分钟 → 秒）------------------------------------------
-INTERVAL_MIN=5
+INTERVAL_MIN=15
 if [ -f "$CONFIG" ]; then
     v="$(awk -F: '/^interval_min:/{gsub(/[ \t#].*/,"",$2); print $2}' "$CONFIG" | head -1)"
     [ -n "${v:-}" ] && INTERVAL_MIN="$v"

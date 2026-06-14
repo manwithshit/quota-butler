@@ -25,6 +25,8 @@ ANTHROPIC_BETA = "oauth-2025-04-20"
 USER_AGENT = "quota-butler/0.1"
 HTTP_TIMEOUT = 15
 
+_WINDOW_SECONDS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
+
 
 class ClaudeProvider(Provider):
     name = "cc"
@@ -110,6 +112,7 @@ class ClaudeProvider(Provider):
             return WindowUsage(
                 utilization=float(node["utilization"]),
                 resets_at=_parse_dt(node["resets_at"]),
+                window_seconds=_WINDOW_SECONDS.get(key),
             )
         except (KeyError, ValueError, TypeError) as e:
             if required:

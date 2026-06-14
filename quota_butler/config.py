@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, time as dtime
 from typing import Any, Dict, Optional
 
 
 # ---- 默认值（config 未给时的兜底）---------------------------------------
 
 DEFAULTS: Dict[str, Any] = {
-    "interval_min": 5,         # launchd 拉起间隔（仅文档用途，实际间隔在 plist）
+    "interval_min": 15,        # launchd 拉起间隔（仅文档用途，实际间隔在 plist）
     "reset_soon_min": 20,      # 距 reset 小于这个分钟数 → 触发
     "waste_pct": None,         # 可选叠加：利用率低于此值才提醒（None = 关）
     "warmup_provider": "cc",   # 预热用哪个 provider：cc / codex
@@ -31,6 +32,38 @@ class FeishuConfig:
 
 
 @dataclass
+class QuietHours:
+    """安静时段（本地时间 HH:MM）。区间内即使命中也不推送，免半夜打扰。
+
+    start/end 任一为空 = 关闭。支持跨午夜（如 23:00–08:00）。
+    """
+    start: str = ""
+    end: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.start and self.end)
+
+    def contains(self, t: dtime) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            s, e = _parse_hhmm(self.start), _parse_hhmm(self.end)
+        except (ValueError, TypeError):
+            return False
+        if s == e:
+            return False
+        if s < e:
+            return s <= t < e
+        return t >= s or t < e  # 跨午夜
+
+
+def _parse_hhmm(value: str) -> dtime:
+    hh, _, mm = str(value).strip().partition(":")
+    return dtime(int(hh), int(mm or 0))
+
+
+@dataclass
 class Config:
     interval_min: int = DEFAULTS["interval_min"]
     reset_soon_min: int = DEFAULTS["reset_soon_min"]
@@ -40,10 +73,15 @@ class Config:
     muted: bool = DEFAULTS["muted"]
     state_path: str = DEFAULTS["state_path"]
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
+    quiet_hours: QuietHours = field(default_factory=QuietHours)
 
     @property
     def resolved_state_path(self) -> str:
         return os.path.expanduser(self.state_path)
+
+    def is_quiet(self, now: datetime) -> bool:
+        """now: aware datetime（UTC）。转本地时间判断是否处于安静时段。"""
+        return self.quiet_hours.contains(now.astimezone().time())
 
 
 def _coerce(cfg: Config) -> None:
@@ -61,10 +99,15 @@ def _coerce(cfg: Config) -> None:
 def from_dict(data: Dict[str, Any]) -> Config:
     data = dict(data or {})
     feishu_raw = data.pop("feishu", {}) or {}
+    quiet_raw = data.pop("quiet_hours", {}) or {}
     cfg = Config(**{k: v for k, v in data.items() if k in DEFAULTS})
     cfg.feishu = FeishuConfig(
         chat_id=str(feishu_raw.get("chat_id", "")),
         user_id=str(feishu_raw.get("user_id", "")),
+    )
+    cfg.quiet_hours = QuietHours(
+        start=str(quiet_raw.get("start", "") or ""),
+        end=str(quiet_raw.get("end", "") or ""),
     )
     _coerce(cfg)
     return cfg
