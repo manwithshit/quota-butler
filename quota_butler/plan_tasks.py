@@ -101,6 +101,7 @@ def install_plan_tasks(
         future_warmups = [
             event for event in record["events"]
             if event["kind"] in ("warmup", "recovery")
+            and event["agent"] == "codex"
             and now < _parse_datetime(event["at"]) <= work_end
         ]
         for index, event in enumerate(future_warmups):

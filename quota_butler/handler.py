@@ -275,6 +275,10 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         provider_name = str((payload or {}).get("provider") or "")
         window_key = str((payload or {}).get("window_key") or "")
         label = PROVIDER_LABEL.get(provider_name, provider_name)
+        if provider_name != "codex":
+            _safe_receipt("真实预热仅允许 Codex", cfg, dry_run)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 4
         if window_key and st.last_oneup_started_window == window_key:
             _safe_receipt(f"{label} 在这个恢复窗口已经启动过，不重复预热", cfg, dry_run)
             return 0
@@ -339,6 +343,10 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
             print("[回调] 定时预热与当前 active plan 不匹配，拒绝执行", file=sys.stderr)
             state_mod.save(cfg.resolved_state_path, st)
             return 4
+        if provider_name != "codex":
+            _safe_receipt("真实预热仅允许 Codex", cfg, dry_run)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 4
         if task.get("status") == "executed":
             print("[回调] 定时预热已执行过，跳过")
             return 0
@@ -377,15 +385,15 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         state_mod.save(cfg.resolved_state_path, st)
         return 0
 
-    # ⚠️ 6/15 起 CC `claude -p` 独立计费——这是产品已知并接受的选择
-    print(f"[回调] 点「开」→ 用 {cfg.warmup_provider} 预热：{cfg.warmup_prompt!r}")
+    provider_name = "codex"
+    print(f"[回调] 点「开」→ 用 {provider_name} 预热：{cfg.warmup_prompt!r}")
     if dry_run:
         # dry-run 绝不真烧 token：只模拟，不调 warmup()
         print("[dry-run] 跳过真实 claude -p 调用")
         _safe_receipt("✅ 已开窗，新窗口从现在起算", cfg, dry_run)
         print("[回调] 预热完成（dry-run 模拟），已回执")
         return 0
-    provider = get_provider(cfg.warmup_provider)
+    provider = get_provider(provider_name)
     try:
         provider.warmup(cfg.warmup_prompt)
     except ProviderError as e:
