@@ -75,14 +75,15 @@ class TestHandler(unittest.TestCase):
         rc = handler.handle({"action": "bogus"}, config_path=self.cfg_path)
         self.assertEqual(rc, 1)
 
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_task_card")
     @mock.patch("quota_butler.handler.get_provider")
-    @mock.patch("quota_butler.handler.push_schedule_card")
     @mock.patch("quota_butler.handler.plan_from_config")
-    def test_schedule_intent_tomorrow_uses_next_date(
-        self, plan_from_config, push, get_provider
+    def test_schedule_intent_starts_guided_flow_for_tomorrow(
+        self, plan_from_config, get_provider, build_task, push
     ):
-        plan_from_config.return_value = mock.Mock()
-        get_provider.return_value.read_usage.return_value = mock.Mock()
+        card = {"schema": "2.0"}
+        build_task.return_value = card
 
         rc = handler.handle(
             {"action": "schedule_intent", "intent": "帮我安排明天"},
@@ -91,37 +92,124 @@ class TestHandler(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(
-            plan_from_config.call_args.kwargs["target_date"],
+            build_task.call_args.args[0],
             date.today() + timedelta(days=1),
         )
+        push.assert_called_once_with(
+            card,
+            mock.ANY,
+            dry_run=False,
+        )
+        get_provider.assert_not_called()
+        plan_from_config.assert_not_called()
 
-    @mock.patch("quota_butler.handler.get_provider")
-    @mock.patch("quota_butler.handler.push_schedule_card")
-    @mock.patch("quota_butler.handler.plan_from_config")
-    def test_schedule_intent_excludes_unavailable_agents(
-        self, plan_from_config, push, get_provider
-    ):
-        plan_from_config.return_value = mock.Mock()
-
-        def provider(name):
-            item = mock.Mock()
-            if name == "cc":
-                item.read_usage.side_effect = handler.ProviderError("token expired")
-            else:
-                item.read_usage.return_value = mock.Mock()
-            return item
-
-        get_provider.side_effect = provider
-
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_intensity_card")
+    def test_schedule_flow_advances_to_requested_step(self, build_card, push):
+        card = {"schema": "2.0"}
+        build_card.return_value = card
         rc = handler.handle(
-            {"action": "schedule_intent", "intent": "帮我安排明天"},
+            {
+                "action": "schedule_flow",
+                "flow_version": 2,
+                "step": "intensity",
+                "target_date": (date.today() + timedelta(days=1)).isoformat(),
+                "preferences": {
+                    "task_type": "coding",
+                    "intensity": "normal",
+                    "work_start": "09:00",
+                    "work_end": "17:00",
+                },
+            },
             config_path=self.cfg_path,
         )
 
         self.assertEqual(rc, 0)
-        self.assertEqual(plan_from_config.call_args.kwargs["agents"], ("codex",))
-        self.assertIn("Claude Code", push.call_args.kwargs["warnings"][0])
-        self.assertIn("token expired", push.call_args.kwargs["warnings"][0])
+        prefs = build_card.call_args.args[1]
+        self.assertEqual(prefs.task_type, "coding")
+        push.assert_called_once_with(card, mock.ANY, dry_run=False)
+
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_summary_card")
+    def test_schedule_flow_reads_time_form_values(self, build_card, push):
+        card = {"schema": "2.0"}
+        build_card.return_value = card
+
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": 2,
+                "step": "summary",
+                "target_date": (date.today() + timedelta(days=1)).isoformat(),
+                "preferences": {
+                    "task_type": "research",
+                    "intensity": "high",
+                    "work_start": "09:00",
+                    "work_end": "17:00",
+                },
+                "form_value": {
+                    "work_start": "10:15",
+                    "work_end": "18:45",
+                },
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        prefs = build_card.call_args.args[1]
+        self.assertEqual(prefs.work_start, "10:15")
+        self.assertEqual(prefs.work_end, "18:45")
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_time_card")
+    def test_schedule_flow_invalid_time_returns_time_card_with_error(
+        self, build_card, push
+    ):
+        card = {"schema": "2.0"}
+        build_card.return_value = card
+
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": 2,
+                "step": "summary",
+                "target_date": (date.today() + timedelta(days=1)).isoformat(),
+                "preferences": {
+                    "task_type": "research",
+                    "intensity": "high",
+                    "work_start": "09:00",
+                    "work_end": "17:00",
+                },
+                "form_value": {
+                    "work_start": "18:00",
+                    "work_end": "09:00",
+                },
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("晚于", build_card.call_args.kwargs["error"])
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    def test_schedule_flow_rejects_old_or_expired_card(self, push, push_receipt):
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": 1,
+                "step": "task",
+                "target_date": date.today().isoformat(),
+                "preferences": {},
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 4)
+        push.assert_not_called()
+        self.assertIn("重新规划", push_receipt.call_args.args[0])
 
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.get_provider")
