@@ -127,8 +127,13 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
             _safe_receipt("已有生效计划，请先取消后再采用新计划", cfg, dry_run)
             state_mod.save(cfg.resolved_state_path, st)
             return 4
+        candidate = (payload or {}).get("plan")
+        if not isinstance(candidate, dict) or candidate.get("plan_version") != 2:
+            _safe_receipt("旧计划已失效，请重新规划", cfg, dry_run)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 4
         try:
-            record = validate_plan_record((payload or {}).get("plan"))
+            record = validate_plan_record(candidate)
             planned_agents = tuple(dict.fromkeys(
                 str(agent)
                 for agent in (
