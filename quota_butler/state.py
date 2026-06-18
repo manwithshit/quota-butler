@@ -33,6 +33,7 @@ class State:
     muted_until: Optional[str] = None
     pending_oneup: Optional[Dict[str, Any]] = None
     last_oneup_started_window: Optional[str] = None
+    schedule_profiles: Optional[Dict[str, Dict[str, Any]]] = None
 
 
 def load(path: str) -> State:

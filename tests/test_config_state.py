@@ -67,12 +67,19 @@ class TestState(unittest.TestCase):
                 last_utilization=42.0,
                 last_notified_reset_at="2026-06-13T12:00:00+00:00",
                 active_plan={"plan_id": "plan-1", "status": "active"},
+                schedule_profiles={
+                    "ou_alice": {"daily_scenario": "独立开发产品"},
+                },
             )
             state_mod.save(path, st)
             loaded = state_mod.load(path)
             self.assertEqual(loaded.last_utilization, 42.0)
             self.assertEqual(loaded.last_notified_reset_at, "2026-06-13T12:00:00+00:00")
             self.assertEqual(loaded.active_plan["plan_id"], "plan-1")
+            self.assertEqual(
+                loaded.schedule_profiles["ou_alice"]["daily_scenario"],
+                "独立开发产品",
+            )
 
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")

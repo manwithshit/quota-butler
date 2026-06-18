@@ -39,6 +39,7 @@ from .notify import (
     PROVIDER_LABEL,
     NotifyError,
     build_schedule_intensity_card,
+    build_schedule_scenario_card,
     build_schedule_summary_card,
     build_schedule_task_card,
     build_schedule_time_card,
@@ -55,7 +56,7 @@ from .plan_tasks import (
     validate_plan_record,
 )
 from .planner import parse_agents, plan_from_config, plan_from_preferences
-from .schedule_flow import parse_preferences, validate_flow_context
+from .schedule_flow import SchedulePreferences, parse_preferences, validate_flow_context
 from .providers import get_provider
 from .providers.base import ProviderError
 from .window import same_window
@@ -84,7 +85,16 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         if "明天" in intent or "tomorrow" in intent.lower():
             target_date += timedelta(days=1)
         try:
-            card = build_schedule_task_card(target_date)
+            profile = _schedule_profile(st, payload or {})
+            if profile.get("daily_scenario"):
+                preferences = parse_preferences(profile)
+                card = build_schedule_task_card(target_date, preferences)
+            else:
+                card = build_schedule_scenario_card(
+                    target_date,
+                    SchedulePreferences(),
+                    return_step="task",
+                )
             push_guided_schedule_card(card, cfg, dry_run=dry_run)
         except NotifyError as e:
             print(f"[回调] 规划引导卡发送失败：{e}", file=sys.stderr)
@@ -107,9 +117,30 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         if isinstance(form_value, dict):
             raw_preferences.update({
                 key: form_value[key]
-                for key in ("work_start", "work_end")
+                for key in ("work_start", "work_end", "daily_scenario")
                 if key in form_value
             })
+        step = str((payload or {}).get("step") or "")
+        if step == "scenario_saved" and not str(
+            raw_preferences.get("daily_scenario") or ""
+        ).strip():
+            try:
+                fallback = parse_preferences(
+                    (payload or {}).get("preferences") or {}
+                )
+                card = build_schedule_scenario_card(
+                    target_date,
+                    fallback,
+                    return_step=str((payload or {}).get("return_step") or "task"),
+                    error="请填写日常使用场景",
+                )
+                push_guided_schedule_card(card, cfg, dry_run=dry_run)
+            except (ValueError, NotifyError) as send_error:
+                print(f"[回调] 场景卡发送失败：{send_error}", file=sys.stderr)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 3
+            state_mod.save(cfg.resolved_state_path, st)
+            return 0
         try:
             preferences = parse_preferences(raw_preferences)
         except ValueError as e:
@@ -132,7 +163,26 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
             state_mod.save(cfg.resolved_state_path, st)
             return 0
 
-        step = str((payload or {}).get("step") or "")
+        if step == "scenario_saved":
+            profiles = dict(st.schedule_profiles or {})
+            profiles[_schedule_profile_key(payload or {})] = {
+                "daily_scenario": preferences.daily_scenario,
+            }
+            st.schedule_profiles = profiles
+            return_step = str((payload or {}).get("return_step") or "task")
+            if return_step == "summary":
+                card = build_schedule_summary_card(target_date, preferences)
+            else:
+                card = build_schedule_task_card(target_date, preferences)
+            try:
+                push_guided_schedule_card(card, cfg, dry_run=dry_run)
+            except NotifyError as e:
+                print(f"[回调] 保存场景后发卡失败：{e}", file=sys.stderr)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 3
+            state_mod.save(cfg.resolved_state_path, st)
+            return 0
+
         if step == "generate":
             available, _ = _agent_availability(("cc", "codex"))
             if not available:
@@ -159,6 +209,20 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
             "time": build_schedule_time_card,
             "summary": build_schedule_summary_card,
         }
+        if step == "scenario":
+            try:
+                card = build_schedule_scenario_card(
+                    target_date,
+                    preferences,
+                    return_step="summary",
+                )
+                push_guided_schedule_card(card, cfg, dry_run=dry_run)
+            except NotifyError as e:
+                print(f"[回调] 场景卡发送失败：{e}", file=sys.stderr)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 3
+            state_mod.save(cfg.resolved_state_path, st)
+            return 0
         builder = builders.get(step)
         if builder is None:
             print(f"[回调] 未知规划步骤={step!r}", file=sys.stderr)
@@ -440,6 +504,20 @@ def _agent_availability(agent_names):
         except (ProviderError, NotImplementedError, ValueError) as exc:
             failures.append(f"{label} 不可用：{exc}")
     return tuple(available), tuple(failures)
+
+
+def _schedule_profile_key(payload: dict) -> str:
+    operator = str((payload or {}).get("_operator_open_id") or "").strip()
+    if operator:
+        return operator
+    chat = str((payload or {}).get("_chat_id") or "").strip()
+    return f"chat:{chat}" if chat else "default"
+
+
+def _schedule_profile(st, payload: dict) -> dict:
+    profiles = st.schedule_profiles or {}
+    profile = profiles.get(_schedule_profile_key(payload))
+    return dict(profile) if isinstance(profile, dict) else {}
 
 
 def _read_payload(raw: str = "") -> dict:

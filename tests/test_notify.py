@@ -7,6 +7,7 @@ from quota_butler.notify import (
     build_command_menu_card,
     build_oneup_card,
     build_schedule_intensity_card,
+    build_schedule_scenario_card,
     build_schedule_summary_card,
     build_schedule_task_card,
     build_schedule_time_card,
@@ -140,6 +141,21 @@ class TestStatusCard(unittest.TestCase):
 
 
 class TestScheduleCard(unittest.TestCase):
+    def test_task_card_uses_two_by_two_mobile_button_grid(self):
+        card = build_schedule_task_card(date(2026, 6, 19))
+        rows = [
+            element for element in card["body"]["elements"]
+            if element.get("tag") == "column_set"
+        ]
+
+        self.assertEqual([len(row["columns"]) for row in rows], [2, 2])
+        buttons = [
+            column["elements"][0]
+            for row in rows
+            for column in row["columns"]
+        ]
+        self.assertTrue(all(button["width"] == "fill" for button in buttons))
+
     def test_task_card_buttons_preserve_context_and_advance_to_intensity(self):
         target = date(2026, 6, 19)
         card = build_schedule_task_card(target)
@@ -167,6 +183,44 @@ class TestScheduleCard(unittest.TestCase):
             all(value["preferences"]["task_type"] == "coding" for value in values)
         )
         self.assertTrue(all(value["step"] == "time" for value in values))
+
+    def test_choice_and_summary_actions_never_exceed_two_columns_per_row(self):
+        prefs = SchedulePreferences(task_type="coding", daily_scenario="独立开发产品")
+        cards = [
+            build_schedule_intensity_card(date(2026, 6, 19), prefs),
+            build_schedule_summary_card(date(2026, 6, 19), prefs),
+        ]
+
+        for card in cards:
+            rows = [
+                element for element in card["body"]["elements"]
+                if element.get("tag") == "column_set"
+            ]
+            self.assertTrue(rows)
+            self.assertTrue(all(len(row["columns"]) <= 2 for row in rows))
+
+    def test_first_use_scenario_card_accepts_manual_input(self):
+        card = build_schedule_scenario_card(
+            date(2026, 6, 19),
+            SchedulePreferences(),
+            return_step="task",
+        )
+        form = next(
+            element for element in card["body"]["elements"]
+            if element.get("tag") == "form"
+        )
+        field = next(
+            element for element in form["elements"]
+            if element.get("tag") == "input"
+        )
+        submit = form["elements"][-1]
+
+        self.assertEqual(field["name"], "daily_scenario")
+        self.assertTrue(field["required"])
+        self.assertEqual(submit["form_action_type"], "submit")
+        value = submit["behaviors"][0]["value"]
+        self.assertEqual(value["step"], "scenario_saved")
+        self.assertEqual(value["return_step"], "task")
 
     def test_time_card_uses_required_native_time_pickers_in_a_form(self):
         prefs = SchedulePreferences(
@@ -206,6 +260,7 @@ class TestScheduleCard(unittest.TestCase):
             intensity="light",
             work_start="10:00",
             work_end="16:00",
+            daily_scenario="独立开发产品",
         )
         card = build_schedule_summary_card(date(2026, 6, 19), prefs)
         markdown = _card_markdown(card)
@@ -215,10 +270,22 @@ class TestScheduleCard(unittest.TestCase):
         self.assertIn("轻量", markdown)
         self.assertIn("10:00–16:00", markdown)
         self.assertIn("北京时间", markdown)
+        self.assertIn("独立开发产品", markdown)
         self.assertEqual(
             [value["step"] for value in values],
-            ["generate", "task", "intensity", "time"],
+            ["generate", "task", "intensity", "time", "scenario"],
         )
+
+    def test_manual_scenario_is_escaped_before_markdown_rendering(self):
+        prefs = SchedulePreferences(daily_scenario="**伪标题** [链接](x)")
+
+        markdown = _card_markdown(
+            build_schedule_summary_card(date(2026, 6, 19), prefs)
+        )
+
+        self.assertNotIn("日常场景：****伪标题****", markdown)
+        self.assertIn(r"\*\*伪标题\*\*", markdown)
+        self.assertIn(r"\[链接\]\(x\)", markdown)
 
     def test_schedule_card_is_human_readable_and_shows_trust_metrics(self):
         plan = plan_from_preferences(
@@ -227,6 +294,7 @@ class TestScheduleCard(unittest.TestCase):
                 intensity="normal",
                 work_start="09:00",
                 work_end="17:00",
+                daily_scenario="独立开发产品",
             ),
             target_date=date(2026, 6, 19),
             agents=("codex",),
@@ -236,6 +304,7 @@ class TestScheduleCard(unittest.TestCase):
 
         self.assertIn("09:00–17:00", markdown)
         self.assertIn("本次使用：**Codex**", markdown)
+        self.assertIn("日常场景：**独立开发产品**", markdown)
         self.assertNotIn("Claude Code", markdown)
         self.assertIn("计划覆盖率：**100%**", markdown)
         self.assertIn("预计空档：**0 分钟**", markdown)
@@ -261,6 +330,11 @@ class TestScheduleCard(unittest.TestCase):
         self.assertEqual(adjust["step"], "summary")
         self.assertEqual(adjust["preferences"]["task_type"], "content")
         self.assertEqual(values[0]["plan"]["plan_version"], 2)
+        rows = [
+            element for element in card["body"]["elements"]
+            if element.get("tag") == "column_set"
+        ]
+        self.assertEqual([len(row["columns"]) for row in rows], [2, 1])
 
     def test_schedule_card_never_surfaces_unavailable_agent_warning(self):
         plan = plan_from_preferences(

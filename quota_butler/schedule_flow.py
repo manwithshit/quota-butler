@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any, Dict, Mapping, Optional
 
-FLOW_VERSION = 2
+FLOW_VERSION = 3
 
 TASK_TYPE_ALIASES = {
     "coding": "coding",
@@ -48,6 +48,7 @@ class SchedulePreferences:
     intensity: str = "normal"
     work_start: str = "09:00"
     work_end: str = "17:00"
+    daily_scenario: str = ""
 
 
 def parse_preferences(value: Optional[Mapping[str, Any]]) -> SchedulePreferences:
@@ -64,8 +65,17 @@ def parse_preferences(value: Optional[Mapping[str, Any]]) -> SchedulePreferences
     )
     work_start = _normalize_hhmm(raw.get("work_start", "09:00"))
     work_end = _normalize_hhmm(raw.get("work_end", "17:00"))
+    daily_scenario = str(raw.get("daily_scenario") or "").strip()
+    if len(daily_scenario) > 120:
+        raise ValueError("日常使用场景不能超过 120 个字符")
     validate_work_time(work_start, work_end)
-    return SchedulePreferences(task_type, intensity, work_start, work_end)
+    return SchedulePreferences(
+        task_type,
+        intensity,
+        work_start,
+        work_end,
+        daily_scenario,
+    )
 
 
 def validate_work_time(work_start: str, work_end: str) -> int:
