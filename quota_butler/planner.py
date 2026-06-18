@@ -61,9 +61,14 @@ def plan_from_config(
     *,
     intent: Optional[str] = None,
     target_date: Optional[date] = None,
+    agents: Optional[Sequence[str]] = None,
 ) -> SchedulePlan:
     mode = normalize_mode(intent or cfg.scheduler_mode)
-    agents = parse_agents(cfg.scheduler_agents)
+    selected_agents = (
+        tuple(_normalize_agent(agent) for agent in agents)
+        if agents is not None
+        else parse_agents(cfg.scheduler_agents)
+    )
     start = combine_local(target_date or date.today(), cfg.work_start)
     sleep = combine_local(target_date or date.today(), cfg.sleep_time)
     if sleep <= start:
@@ -72,7 +77,12 @@ def plan_from_config(
     end = min(duration_end, sleep)
     if end <= start:
         end = start + timedelta(minutes=1)
-    return build_plan(mode=mode, agents=agents, work_start=start, work_end=end)
+    return build_plan(
+        mode=mode,
+        agents=selected_agents,
+        work_start=start,
+        work_end=end,
+    )
 
 
 def build_plan(

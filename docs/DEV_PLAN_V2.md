@@ -40,6 +40,8 @@ categories: [项目, 研发计划]
 - P5 文字 router 兜底：已完成并补单元测试。
 - P0 bridge：已采用本机私人 fork，`cmd: quota` 权限校验、固定 argv 和 launchd
   常驻已完成；待完成群内逐按钮点击验收。
+- 调度安全降级：生成计划和采用计划时都会复核 provider；不可用 Agent 自动剔除，
+  旧卡片在采用前二次拦截。
 
 ---
 

@@ -60,6 +60,20 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(plan.work_end.strftime("%H:%M"), "23:00")
         self.assertEqual(plan.work_hours, 3.0)
 
+    def test_plan_from_config_accepts_runtime_agent_override(self):
+        cfg = Config(
+            scheduler_agents="cc,codex",
+            work_start="09:00",
+            sleep_time="23:00",
+            work_duration_hours=8,
+        )
+        plan = plan_from_config(
+            cfg,
+            target_date=date(2026, 6, 18),
+            agents=("codex",),
+        )
+        self.assertEqual(plan.agents, ("codex",))
+
 
 if __name__ == "__main__":
     unittest.main()

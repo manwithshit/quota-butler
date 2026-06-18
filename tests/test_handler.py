@@ -75,10 +75,14 @@ class TestHandler(unittest.TestCase):
         rc = handler.handle({"action": "bogus"}, config_path=self.cfg_path)
         self.assertEqual(rc, 1)
 
+    @mock.patch("quota_butler.handler.get_provider")
     @mock.patch("quota_butler.handler.push_schedule_card")
     @mock.patch("quota_butler.handler.plan_from_config")
-    def test_schedule_intent_tomorrow_uses_next_date(self, plan_from_config, push):
+    def test_schedule_intent_tomorrow_uses_next_date(
+        self, plan_from_config, push, get_provider
+    ):
         plan_from_config.return_value = mock.Mock()
+        get_provider.return_value.read_usage.return_value = mock.Mock()
 
         rc = handler.handle(
             {"action": "schedule_intent", "intent": "帮我安排明天"},
@@ -91,9 +95,41 @@ class TestHandler(unittest.TestCase):
             date.today() + timedelta(days=1),
         )
 
+    @mock.patch("quota_butler.handler.get_provider")
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.plan_from_config")
+    def test_schedule_intent_excludes_unavailable_agents(
+        self, plan_from_config, push, get_provider
+    ):
+        plan_from_config.return_value = mock.Mock()
+
+        def provider(name):
+            item = mock.Mock()
+            if name == "cc":
+                item.read_usage.side_effect = handler.ProviderError("token expired")
+            else:
+                item.read_usage.return_value = mock.Mock()
+            return item
+
+        get_provider.side_effect = provider
+
+        rc = handler.handle(
+            {"action": "schedule_intent", "intent": "帮我安排明天"},
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(plan_from_config.call_args.kwargs["agents"], ("codex",))
+        self.assertIn("Claude Code", push.call_args.kwargs["warnings"][0])
+        self.assertIn("token expired", push.call_args.kwargs["warnings"][0])
+
     @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
     @mock.patch("quota_butler.handler.install_plan_tasks")
-    def test_adopt_schedule_installs_tasks_and_records_active_plan(self, install, push_receipt):
+    def test_adopt_schedule_installs_tasks_and_records_active_plan(
+        self, install, get_provider, push_receipt
+    ):
+        get_provider.return_value.read_usage.return_value = mock.Mock()
         install.return_value = [
             {"label": "com.quota-butler.plan.p1.0", "plist_path": "/tmp/p1.plist"}
         ]
@@ -128,6 +164,40 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(install.call_args.kwargs["config_path"], self.cfg_path)
         push_receipt.assert_called_once()
         self.assertIn("已采用计划", push_receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
+    @mock.patch("quota_butler.handler.install_plan_tasks")
+    def test_adopt_schedule_rejects_plan_with_unavailable_agent(
+        self, install, get_provider, push_receipt
+    ):
+        get_provider.return_value.read_usage.side_effect = handler.ProviderError(
+            "token expired"
+        )
+        payload = {
+            "action": "adopt_schedule",
+            "plan": {
+                "plan_id": "p1",
+                "mode": "balanced",
+                "agents": ["cc"],
+                "work_start": "2026-06-19T09:00:00+00:00",
+                "work_end": "2026-06-19T17:00:00+00:00",
+                "events": [
+                    {
+                        "agent": "cc",
+                        "kind": "warmup",
+                        "at": "2026-06-19T08:30:00+00:00",
+                    }
+                ],
+            },
+        }
+
+        rc = handler.handle(payload, config_path=self.cfg_path)
+
+        self.assertEqual(rc, 4)
+        install.assert_not_called()
+        self.assertIn("Claude Code", push_receipt.call_args.args[0])
+        self.assertIn("不可用", push_receipt.call_args.args[0])
 
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.cancel_plan_tasks")

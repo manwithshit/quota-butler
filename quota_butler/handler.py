@@ -49,7 +49,7 @@ from .plan_tasks import (
     install_plan_tasks,
     validate_plan_record,
 )
-from .planner import plan_from_config
+from .planner import parse_agents, plan_from_config
 from .providers import get_provider
 from .providers.base import ProviderError
 from .window import same_window
@@ -77,13 +77,25 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         target_date = date.today()
         if "明天" in intent or "tomorrow" in intent.lower():
             target_date += timedelta(days=1)
+        available, failures = _agent_availability(parse_agents(cfg.scheduler_agents))
+        if not available:
+            detail = "；".join(failures) or "没有可用 Agent"
+            _safe_receipt(f"❌ 无法生成计划：{detail}", cfg, dry_run)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 4
         try:
             plan = plan_from_config(
                 cfg,
                 intent=intent or None,
                 target_date=target_date,
+                agents=available,
             )
-            push_schedule_card(plan, cfg, dry_run=dry_run)
+            push_schedule_card(
+                plan,
+                cfg,
+                dry_run=dry_run,
+                warnings=tuple(failures),
+            )
         except (ValueError, NotifyError) as e:
             print(f"[回调] 调度计划失败：{e}", file=sys.stderr)
             state_mod.save(cfg.resolved_state_path, st)
@@ -117,6 +129,24 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
             return 4
         try:
             record = validate_plan_record((payload or {}).get("plan"))
+            planned_agents = tuple(dict.fromkeys(
+                str(agent)
+                for agent in (
+                    record.get("agents")
+                    or [event.get("agent") for event in record.get("events") or []]
+                )
+                if agent
+            ))
+            _, failures = _agent_availability(planned_agents)
+            if failures:
+                detail = "；".join(failures)
+                _safe_receipt(
+                    f"❌ 计划包含不可用 Agent，已拒绝采用：{detail}",
+                    cfg,
+                    dry_run,
+                )
+                state_mod.save(cfg.resolved_state_path, st)
+                return 4
             tasks = [] if dry_run else install_plan_tasks(
                 record, cfg, config_path=config_path
             )
@@ -314,6 +344,19 @@ def _matching_plan_task(active_plan, plan_id: str, provider: str, scheduled_for:
         if task.get("provider") == provider and task.get("scheduled_for") == scheduled_for:
             return task
     return None
+
+
+def _agent_availability(agent_names):
+    available = []
+    failures = []
+    for name in agent_names:
+        label = PROVIDER_LABEL.get(name, name)
+        try:
+            get_provider(name).read_usage()
+            available.append(name)
+        except (ProviderError, NotImplementedError, ValueError) as exc:
+            failures.append(f"{label} 不可用：{exc}")
+    return tuple(available), tuple(failures)
 
 
 def _read_payload(raw: str = "") -> dict:

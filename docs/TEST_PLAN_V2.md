@@ -219,5 +219,5 @@ python3 -m unittest discover -s tests -v
 当前 Quota Butler 基线：
 
 ```text
-Ran 95 tests ... OK
+Ran 100 tests ... OK
 ```
