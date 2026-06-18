@@ -54,7 +54,7 @@ from .plan_tasks import (
     install_plan_tasks,
     validate_plan_record,
 )
-from .planner import parse_agents, plan_from_config
+from .planner import parse_agents, plan_from_config, plan_from_preferences
 from .schedule_flow import parse_preferences, validate_flow_context
 from .providers import get_provider
 from .providers.base import ProviderError
@@ -133,6 +133,26 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
             return 0
 
         step = str((payload or {}).get("step") or "")
+        if step == "generate":
+            available, _ = _agent_availability(("cc", "codex"))
+            if not available:
+                _safe_receipt("暂时没有可用 Agent，无法生成计划", cfg, dry_run)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 4
+            try:
+                plan = plan_from_preferences(
+                    preferences,
+                    target_date=target_date,
+                    agents=available,
+                )
+                push_schedule_card(plan, cfg, dry_run=dry_run)
+            except (ValueError, NotifyError) as e:
+                print(f"[回调] 生成计划失败：{e}", file=sys.stderr)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 3
+            state_mod.save(cfg.resolved_state_path, st)
+            return 0
+
         builders = {
             "task": build_schedule_task_card,
             "intensity": build_schedule_intensity_card,

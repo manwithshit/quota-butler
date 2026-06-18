@@ -25,6 +25,21 @@ def _config_file(chat_id="oc_test"):
     return cfg_path, state_path
 
 
+def _guided_generate_payload():
+    return {
+        "action": "schedule_flow",
+        "flow_version": 2,
+        "step": "generate",
+        "target_date": (date.today() + timedelta(days=1)).isoformat(),
+        "preferences": {
+            "task_type": "coding",
+            "intensity": "normal",
+            "work_start": "09:00",
+            "work_end": "17:00",
+        },
+    }
+
+
 class TestHandler(unittest.TestCase):
     def setUp(self):
         self.cfg_path, self.state_path = _config_file()
@@ -210,6 +225,99 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(rc, 4)
         push.assert_not_called()
         self.assertIn("重新规划", push_receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.plan_from_preferences")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_schedule_generation_uses_codex_when_claude_is_unavailable(
+        self, get_provider, plan_from_preferences, push
+    ):
+        plan_from_preferences.return_value = mock.Mock()
+
+        def provider(name):
+            item = mock.Mock()
+            if name == "cc":
+                item.read_usage.side_effect = handler.ProviderError("expired")
+            return item
+
+        get_provider.side_effect = provider
+
+        rc = handler.handle(
+            _guided_generate_payload(),
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(plan_from_preferences.call_args.kwargs["agents"], ("codex",))
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.plan_from_preferences")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_schedule_generation_uses_claude_when_codex_is_unavailable(
+        self, get_provider, plan_from_preferences, push
+    ):
+        plan_from_preferences.return_value = mock.Mock()
+
+        def provider(name):
+            item = mock.Mock()
+            if name == "codex":
+                item.read_usage.side_effect = handler.ProviderError("offline")
+            return item
+
+        get_provider.side_effect = provider
+
+        rc = handler.handle(
+            _guided_generate_payload(),
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(plan_from_preferences.call_args.kwargs["agents"], ("cc",))
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.plan_from_preferences")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_schedule_generation_combines_both_available_agents(
+        self, get_provider, plan_from_preferences, push
+    ):
+        plan_from_preferences.return_value = mock.Mock()
+
+        rc = handler.handle(
+            _guided_generate_payload(),
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            plan_from_preferences.call_args.kwargs["agents"],
+            ("cc", "codex"),
+        )
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.plan_from_preferences")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_schedule_generation_stops_only_when_all_agents_are_unavailable(
+        self, get_provider, plan_from_preferences, push, push_receipt
+    ):
+        get_provider.return_value.read_usage.side_effect = handler.ProviderError(
+            "unavailable"
+        )
+
+        rc = handler.handle(
+            _guided_generate_payload(),
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 4)
+        plan_from_preferences.assert_not_called()
+        push.assert_not_called()
+        message = push_receipt.call_args.args[0]
+        self.assertIn("暂时没有可用 Agent", message)
+        self.assertNotIn("unavailable", message)
 
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.get_provider")
