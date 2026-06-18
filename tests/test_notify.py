@@ -152,6 +152,23 @@ class TestScheduleCard(unittest.TestCase):
         self.assertIn("深度创作", markdown)
         self.assertIn("CAS", markdown)
 
+    def test_schedule_card_surfaces_agent_degradation_warning(self):
+        start = datetime(2026, 6, 18, 9, 0, tzinfo=timezone.utc)
+        plan = build_plan(
+            mode="balanced",
+            agents=("codex",),
+            work_start=start,
+            work_end=start + timedelta(hours=8),
+        )
+        card = build_schedule_card(
+            plan,
+            warnings=("Claude Code 不可用：token 已过期，已降级为 Codex-only",),
+        )
+
+        markdown = _card_markdown(card)
+        self.assertIn("计划已降级", markdown)
+        self.assertIn("Claude Code 不可用", markdown)
+
     def test_active_plan_card_lists_pending_tasks_and_cancel_action(self):
         card = build_active_plan_card({
             "plan_id": "p1",

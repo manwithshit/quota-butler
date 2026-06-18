@@ -326,7 +326,11 @@ def push_oneup_card(
 
 # ---- V2 调度计划卡 ------------------------------------------------------
 
-def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
+def build_schedule_card(
+    plan: SchedulePlan,
+    *,
+    warnings: Sequence[str] = (),
+) -> Dict[str, Any]:
     lines: List[str] = [
         "**🧭 AI Agent 调度计划**",
         "",
@@ -335,9 +339,11 @@ def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
         f"（{plan.work_hours:.1f} 小时）",
         f"- 预计 CAS：**{plan.cas * 100:.0f}%**",
         f"- 预计等待：**{plan.waiting_minutes:.0f} 分钟**",
-        "",
-        "**协作时间线**",
     ]
+    if warnings:
+        lines.extend(["", "**⚠️ 计划已降级**"])
+        lines.extend(f"- {warning}" for warning in warnings)
+    lines.extend(["", "**协作时间线**"])
     lines.extend(_collaboration_timeline(plan))
 
     adopt_value = _callback_value("adopt_schedule", plan=plan_record(plan))
@@ -361,9 +367,14 @@ def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
     }
 
 
-def push_schedule_card(plan: SchedulePlan, config: Config,
-                       dry_run: bool = False) -> Optional[str]:
-    card = build_schedule_card(plan)
+def push_schedule_card(
+    plan: SchedulePlan,
+    config: Config,
+    dry_run: bool = False,
+    *,
+    warnings: Sequence[str] = (),
+) -> Optional[str]:
+    card = build_schedule_card(plan, warnings=warnings)
     if dry_run:
         print("[dry-run] 将发送调度计划卡：")
         print(json.dumps(card, ensure_ascii=False, indent=2))
