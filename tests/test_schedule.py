@@ -1,6 +1,8 @@
+import io
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 from quota_butler import schedule
@@ -24,14 +26,21 @@ class TestScheduleEntrypoint(unittest.TestCase):
             "work_duration_hours: 8\n"
         )
         try:
-            rc = schedule.run(path, intent="帮我安排明天", dry_run=True)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                rc = schedule.run(path, intent="帮我安排明天", dry_run=True)
         finally:
             tmp.cleanup()
 
         self.assertEqual(rc, 0)
         plan = push.call_args.args[0]
         self.assertEqual(plan.agents, ("cc", "codex"))
-        self.assertEqual(plan.work_start.strftime("%H:%M"), "08:00")
+        self.assertEqual(plan.plan_version, 2)
+        self.assertEqual(plan.work_start.strftime("%H:%M"), "09:00")
+        self.assertEqual(plan.work_end.strftime("%H:%M"), "17:00")
+        self.assertEqual(plan.preferences.task_type, "mixed")
+        self.assertNotIn("CAS", output.getvalue())
+        self.assertIn("计划覆盖率", output.getvalue())
         push.assert_called_once()
 
     @mock.patch("quota_butler.schedule.push_schedule_card")
