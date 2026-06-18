@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -34,8 +35,37 @@ class CodexProvider(Provider):
 
     def read_usage(self) -> Usage:
         token, account_id = self._read_auth()
-        raw = self._fetch_usage(token, account_id)
+        try:
+            raw = self._fetch_usage(token, account_id)
+        except ProviderError as e:
+            if isinstance(e.__cause__, urllib.error.HTTPError) and e.__cause__.code == 401:
+                print("[Codex] Token expired (401). Attempting to auto-refresh token...")
+                self._refresh_token()
+                # Reload credentials and retry
+                token, account_id = self._read_auth()
+                raw = self._fetch_usage(token, account_id)
+            else:
+                raise
         return self._parse(raw)
+
+    def _refresh_token(self) -> None:
+        """调用 `codex exec "ping"` 强制 codex CLI 刷新 ~/.codex/auth.json 中的 Token。"""
+        try:
+            out = subprocess.run(
+                ["codex", "exec", "ping"],
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise ProviderError("刷新 Codex Token 超时（codex exec 45s 未返回）") from e
+        except (subprocess.SubprocessError, OSError) as e:
+            raise ProviderError(f"调用 codex 刷新 Token 失败: {e}") from e
+        if out.returncode != 0:
+            raise ProviderError(
+                f"调用 codex 刷新 Token 失败，退出码 {out.returncode}: {out.stderr.strip()[:200]}"
+            )
+        print("[Codex] Token refreshed successfully.")
 
     def _read_auth(self):
         """读 auth.json 拿 token + account_id。token 只在返回值里流转，不落盘。"""
@@ -96,17 +126,34 @@ class CodexProvider(Provider):
             return None
         try:
             win = node.get("limit_window_seconds")
+            reset_at = node.get("reset_at")
             return WindowUsage(
                 utilization=float(node["used_percent"]),
-                resets_at=datetime.fromtimestamp(int(node["reset_at"]), tz=timezone.utc),
+                resets_at=(
+                    datetime.fromtimestamp(int(reset_at), tz=timezone.utc)
+                    if reset_at is not None
+                    else None
+                ),
                 window_seconds=int(win) if win is not None else None,
             )
         except (KeyError, ValueError, TypeError) as e:
             raise ProviderError(f"Codex 窗口字段解析失败: {e}") from e
 
-    # ---- 预热（未实现）--------------------------------------------------
+    # ---- 预热 -----------------------------------------------------------
 
     def warmup(self, prompt: str) -> str:
-        raise NotImplementedError(
-            "Codex 预热未实现（免费档无 5h 窗口可换挡，见 BACKLOG）。"
-        )
+        """`codex exec "<prompt>"` 走订阅且不计费，以此预热并开窗。"""
+        try:
+            out = subprocess.run(
+                ["codex", "exec", prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise ProviderError("预热超时（codex exec 120s 未返回）") from e
+        except (subprocess.SubprocessError, OSError) as e:
+            raise ProviderError(f"调用 codex 失败: {e}") from e
+        if out.returncode != 0:
+            raise ProviderError(f"codex exec 退出码 {out.returncode}: {out.stderr.strip()[:200]}")
+        return out.stdout.strip()[:200]

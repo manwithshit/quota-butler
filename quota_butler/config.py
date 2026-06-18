@@ -18,8 +18,15 @@ DEFAULTS: Dict[str, Any] = {
     "interval_min": 15,        # launchd 拉起间隔（仅文档用途，实际间隔在 plist）
     "reset_soon_min": 20,      # 距 reset 小于这个分钟数 → 触发
     "waste_pct": None,         # 可选叠加：利用率低于此值才提醒（None = 关）
+    "sense_provider": "cc",    # 感知用哪个 provider：cc / codex
     "warmup_provider": "cc",   # 预热用哪个 provider：cc / codex
     "warmup_prompt": "say hi", # 预热消息（越短越省）
+    "scheduler_mode": "balanced",       # 调度目标：sustain / balanced / savings
+    "scheduler_agents": "cc,codex",     # 参与调度的 agent，逗号分隔
+    "work_duration_hours": 8.0,         # 通常连续工作时长
+    "work_start": "09:00",              # 通常开始工作时间（本地）
+    "sleep_time": "23:00",              # 通常睡觉时间（本地）
+    "plan_tasks_dir": "~/.quota-butler/plan-tasks",
     "muted": False,            # 静音开关：True 时只判断不推送
     "state_path": "~/.quota-butler/state.json",
 }
@@ -68,8 +75,15 @@ class Config:
     interval_min: int = DEFAULTS["interval_min"]
     reset_soon_min: int = DEFAULTS["reset_soon_min"]
     waste_pct: Optional[float] = DEFAULTS["waste_pct"]
+    sense_provider: str = DEFAULTS["sense_provider"]
     warmup_provider: str = DEFAULTS["warmup_provider"]
     warmup_prompt: str = DEFAULTS["warmup_prompt"]
+    scheduler_mode: str = DEFAULTS["scheduler_mode"]
+    scheduler_agents: str = DEFAULTS["scheduler_agents"]
+    work_duration_hours: float = DEFAULTS["work_duration_hours"]
+    work_start: str = DEFAULTS["work_start"]
+    sleep_time: str = DEFAULTS["sleep_time"]
+    plan_tasks_dir: str = DEFAULTS["plan_tasks_dir"]
     muted: bool = DEFAULTS["muted"]
     state_path: str = DEFAULTS["state_path"]
     feishu: FeishuConfig = field(default_factory=FeishuConfig)
@@ -88,6 +102,7 @@ def _coerce(cfg: Config) -> None:
     """把可能是字符串的字段强转成正确类型（fallback 解析器需要）。"""
     cfg.interval_min = int(cfg.interval_min)
     cfg.reset_soon_min = int(cfg.reset_soon_min)
+    cfg.work_duration_hours = float(cfg.work_duration_hours)
     if cfg.waste_pct is not None and cfg.waste_pct != "":
         cfg.waste_pct = float(cfg.waste_pct)
     else:

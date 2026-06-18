@@ -13,6 +13,11 @@ from quota_butler.state import State
 SAMPLE = """\
 reset_soon_min: 30
 warmup_provider: cc
+scheduler_mode: sustain
+scheduler_agents: cc,codex
+work_duration_hours: 6
+work_start: "08:00"
+sleep_time: "23:30"
 muted: true
 waste_pct: 50
 feishu:
@@ -30,6 +35,11 @@ class TestConfig(unittest.TestCase):
             cfg = config_mod.load(path)
             self.assertEqual(cfg.reset_soon_min, 30)
             self.assertEqual(cfg.warmup_provider, "cc")
+            self.assertEqual(cfg.scheduler_mode, "sustain")
+            self.assertEqual(cfg.scheduler_agents, "cc,codex")
+            self.assertEqual(cfg.work_duration_hours, 6.0)
+            self.assertEqual(cfg.work_start, "08:00")
+            self.assertEqual(cfg.sleep_time, "23:30")
             self.assertTrue(cfg.muted)
             self.assertEqual(cfg.waste_pct, 50.0)
             self.assertEqual(cfg.feishu.chat_id, "oc_demo123")
@@ -44,6 +54,7 @@ class TestConfig(unittest.TestCase):
         # 直接打 fallback，证明不依赖 PyYAML
         data = config_mod._tiny_yaml(SAMPLE)
         self.assertEqual(data["reset_soon_min"], 30)
+        self.assertEqual(data["scheduler_agents"], "cc,codex")
         self.assertEqual(data["feishu"]["chat_id"], "oc_demo123")
         self.assertTrue(data["muted"])
 
@@ -52,11 +63,16 @@ class TestState(unittest.TestCase):
     def test_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "sub", "state.json")
-            st = State(last_utilization=42.0, last_notified_reset_at="2026-06-13T12:00:00+00:00")
+            st = State(
+                last_utilization=42.0,
+                last_notified_reset_at="2026-06-13T12:00:00+00:00",
+                active_plan={"plan_id": "plan-1", "status": "active"},
+            )
             state_mod.save(path, st)
             loaded = state_mod.load(path)
             self.assertEqual(loaded.last_utilization, 42.0)
             self.assertEqual(loaded.last_notified_reset_at, "2026-06-13T12:00:00+00:00")
+            self.assertEqual(loaded.active_plan["plan_id"], "plan-1")
 
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")

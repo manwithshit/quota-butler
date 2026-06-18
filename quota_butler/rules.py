@@ -29,6 +29,8 @@ def should_notify(usage: Usage, state: State, config: Config,
     now = now or datetime.now(timezone.utc)
     five = usage.five_hour
     resets_at = five.resets_at
+    if resets_at is None:
+        return Decision(False, "无活跃窗口（已用额度为 0%）")
     if resets_at.tzinfo is None:
         resets_at = resets_at.replace(tzinfo=timezone.utc)
 

@@ -111,7 +111,7 @@ class ClaudeProvider(Provider):
         try:
             return WindowUsage(
                 utilization=float(node["utilization"]),
-                resets_at=_parse_dt(node["resets_at"]),
+                resets_at=_parse_dt(node.get("resets_at")),
                 window_seconds=_WINDOW_SECONDS.get(key),
             )
         except (KeyError, ValueError, TypeError) as e:
@@ -145,13 +145,15 @@ class ClaudeProvider(Provider):
 _FRAC_RE = re.compile(r"\.(\d+)")
 
 
-def _parse_dt(value: str) -> datetime:
+def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     """解析 ISO8601（带时区）。
 
     Python 3.9 的 fromisoformat 很挑：只吃自己 isoformat() 的输出——不认 'Z' 后缀，
     也只认 3/6 位小数秒。真实 API 现在给 6 位微秒能跑，但这里做规整以防格式漂移
     （'Z' → '+00:00'，小数秒补/截成 6 位）。
     """
+    if value is None:
+        return None
     v = value.strip()
     if v.endswith(("Z", "z")):
         v = v[:-1] + "+00:00"

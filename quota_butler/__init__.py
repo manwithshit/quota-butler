@@ -1,6 +1,6 @@
-"""quota-butler · 跑在 Mac 上的轻量额度哨兵。
+"""quota-butler · 跑在 Mac 上的 AI Agent Scheduler。
 
-感知 Claude Code 额度 → 规则判断 → 飞书带按钮提醒 → 人点「开」→ 替你向 CC 发预热消息。
+感知 Claude Code / Codex 额度 → 生成接力计划 → 飞书推送调度卡 → 用户拍板执行。
 """
 
-__version__ = "0.1.0-mvp1"
+__version__ = "0.2.0-v2"
