@@ -12,6 +12,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from .config import Config
+from .schedule_flow import SchedulePreferences, validate_work_time
 
 DEFAULT_WINDOW_SECONDS = 5 * 3600
 SUPPORTED_AGENTS = ("cc", "codex")
@@ -50,10 +51,17 @@ class SchedulePlan:
     cas: float
     waiting_minutes: float
     events: Tuple[PlanEvent, ...]
+    preferences: Optional[SchedulePreferences] = None
+    relay_points: Tuple[PlanEvent, ...] = ()
+    plan_version: int = 2
 
     @property
     def work_hours(self) -> float:
         return (self.work_end - self.work_start).total_seconds() / 3600.0
+
+    @property
+    def relay_count(self) -> int:
+        return len(self.relay_points)
 
 
 def plan_from_config(
@@ -85,6 +93,31 @@ def plan_from_config(
     )
 
 
+def plan_from_preferences(
+    preferences: SchedulePreferences,
+    *,
+    target_date: date,
+    agents: Sequence[str],
+) -> SchedulePlan:
+    validate_work_time(preferences.work_start, preferences.work_end)
+    intensity_mode = {
+        "light": "savings",
+        "normal": "balanced",
+        "high": "sustain",
+    }
+    try:
+        mode = intensity_mode[preferences.intensity]
+    except KeyError as exc:
+        raise ValueError(f"unsupported schedule intensity: {preferences.intensity!r}") from exc
+    return build_plan(
+        mode=mode,
+        agents=agents,
+        work_start=combine_local(target_date, preferences.work_start),
+        work_end=combine_local(target_date, preferences.work_end),
+        preferences=preferences,
+    )
+
+
 def build_plan(
     *,
     mode: str,
@@ -92,6 +125,7 @@ def build_plan(
     work_start: datetime,
     work_end: datetime,
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
+    preferences: Optional[SchedulePreferences] = None,
 ) -> SchedulePlan:
     mode = normalize_mode(mode)
     agents = tuple(_normalize_agent(a) for a in agents)
@@ -129,6 +163,7 @@ def build_plan(
     waiting = max(total - coverage, 0.0) / 60.0
     cas = 0.0 if total <= 0 else min(coverage / total, 1.0)
     events.sort(key=lambda e: (e.at, e.agent, e.kind))
+    relay_points = _relay_points(preferences, work_start, work_end)
     return SchedulePlan(
         mode=mode,
         agents=agents,
@@ -137,6 +172,8 @@ def build_plan(
         cas=cas,
         waiting_minutes=waiting,
         events=tuple(events),
+        preferences=preferences,
+        relay_points=relay_points,
     )
 
 
@@ -184,6 +221,37 @@ def _lead_time(mode: str, window: timedelta) -> timedelta:
     if mode == "savings":
         return timedelta(minutes=30)
     return window / 2
+
+
+def _relay_points(
+    preferences: Optional[SchedulePreferences],
+    work_start: datetime,
+    work_end: datetime,
+) -> Tuple[PlanEvent, ...]:
+    if preferences is None:
+        return ()
+    interval_hours = {
+        "light": 8,
+        "normal": 4,
+        "high": 2,
+    }
+    purpose = {
+        "coding": "代码实现与测试",
+        "content": "创作与审稿",
+        "research": "资料与结论",
+        "mixed": "当前任务与下一阶段",
+    }
+    try:
+        interval = timedelta(hours=interval_hours[preferences.intensity])
+        note = f"接力检查：{purpose[preferences.task_type]}"
+    except KeyError as exc:
+        raise ValueError("unsupported guided schedule preference") from exc
+    points: List[PlanEvent] = []
+    cursor = work_start + interval
+    while cursor < work_end:
+        points.append(PlanEvent("", "relay", cursor, note))
+        cursor += interval
+    return tuple(points)
 
 
 def _covered_seconds(
