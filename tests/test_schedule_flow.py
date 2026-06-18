@@ -33,6 +33,15 @@ class TestSchedulePreferences(unittest.TestCase):
         self.assertEqual(prefs.work_start, "10:05")
         self.assertEqual(prefs.work_end, "18:30")
 
+    def test_parse_preferences_accepts_picker_values_with_timezone_suffix(self):
+        prefs = parse_preferences({
+            "work_start": "10:05 +0800",
+            "work_end": "18:30 +0800",
+        })
+
+        self.assertEqual(prefs.work_start, "10:05")
+        self.assertEqual(prefs.work_end, "18:30")
+
     def test_parse_preferences_rejects_unknown_choices(self):
         with self.assertRaisesRegex(ValueError, "任务类型"):
             parse_preferences({"task_type": "打游戏"})

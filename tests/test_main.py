@@ -150,6 +150,40 @@ class TestMainRun(unittest.TestCase):
 
     @mock.patch("quota_butler.main.push_oneup_card")
     @mock.patch("quota_butler.main.get_provider")
+    def test_claude_recovery_does_not_offer_real_warmup(
+        self, get_provider, push_oneup
+    ):
+        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
+        get_provider.return_value.read_usage.return_value = Usage(
+            provider="cc",
+            five_hour=WindowUsage(0, None, 5 * 3600),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            config_path = os.path.join(d, "config.yaml")
+            state_path = os.path.join(d, "state.json")
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(
+                    "sense_provider: cc\n"
+                    "scheduler_agents: cc\n"
+                    f"state_path: {state_path}\n"
+                )
+            previous_reset = (now - timedelta(minutes=1)).isoformat()
+            state_mod.save(
+                state_path,
+                state_mod.State(
+                    provider_snapshots={
+                        "cc": {"utilization": 80, "reset_at": previous_reset}
+                    }
+                ),
+            )
+
+            code = run(config_path, now=now)
+
+            self.assertEqual(code, 0)
+            push_oneup.assert_not_called()
+
+    @mock.patch("quota_butler.main.push_oneup_card")
+    @mock.patch("quota_butler.main.get_provider")
     def test_active_plan_suppresses_main_oneup(self, get_provider, push_oneup):
         now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
         get_provider.return_value.read_usage.return_value = Usage(
