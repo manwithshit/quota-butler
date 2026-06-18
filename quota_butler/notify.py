@@ -545,22 +545,47 @@ def build_schedule_card(
     *,
     warnings: Sequence[str] = (),
 ) -> Dict[str, Any]:
+    del warnings
+    preferences = plan.preferences or SchedulePreferences(
+        task_type="mixed",
+        intensity={
+            "savings": "light",
+            "balanced": "normal",
+            "sustain": "high",
+        }.get(plan.mode, "normal"),
+        work_start=_fmt_time(plan.work_start),
+        work_end=_fmt_time(plan.work_end),
+    )
+    agent_labels = " + ".join(
+        PROVIDER_LABEL.get(agent, agent) for agent in plan.agents
+    )
     lines: List[str] = [
-        "**🧭 AI Agent 调度计划**",
+        "**明日 AI 工作计划**",
         "",
-        f"- 模式：**{MODE_LABEL.get(plan.mode, plan.mode)}**",
-        f"- 工作时间：**{_fmt_time(plan.work_start)} - {_fmt_time(plan.work_end)}**"
-        f"（{plan.work_hours:.1f} 小时）",
-        f"- 预计 CAS：**{plan.cas * 100:.0f}%**",
-        f"- 预计等待：**{plan.waiting_minutes:.0f} 分钟**",
+        (
+            f"{preferences.work_start}–{preferences.work_end}，"
+            f"共安排 **{plan.relay_count} 次接力**。"
+        ),
+        f"- 本次使用：**{agent_labels}**",
+        f"- 主要任务：**{TASK_TYPE_LABELS[preferences.task_type]}**",
+        f"- 工作强度：**{INTENSITY_LABELS[preferences.intensity]}**",
+        "",
+        "**计算依据**",
+        f"- 计划覆盖率：**{plan.cas * 100:.0f}%**",
+        f"- 预计空档：**{plan.waiting_minutes:.0f} 分钟**",
+        f"- 预计接力：**{plan.relay_count} 次**",
+        "- 按当前额度窗口估算，实际恢复时间可能变化。",
+        "",
+        "**为什么这样安排**",
     ]
-    if warnings:
-        lines.extend(["", "**⚠️ 计划已降级**"])
-        lines.extend(f"- {warning}" for warning in warnings)
-    lines.extend(["", "**协作时间线**"])
-    lines.extend(_collaboration_timeline(plan))
+    lines.extend(_guided_timeline(plan, preferences))
 
     adopt_value = _callback_value("adopt_schedule", plan=plan_record(plan))
+    adjust_value = flow_payload(
+        step="summary",
+        target_date=plan.work_start.date(),
+        preferences=preferences,
+    )
     remind_value = _callback_value("schedule_remind_only")
 
     return {
@@ -573,12 +598,47 @@ def build_schedule_card(
                     "tag": "column_set",
                     "columns": [
                         {"tag": "column", "elements": [_button("采用计划", "primary", adopt_value)]},
+                        {"tag": "column", "elements": [_button("调整设置", "default", adjust_value)]},
                         {"tag": "column", "elements": [_button("仅提醒", "default", remind_value)]},
                     ],
                 },
             ]
         },
     }
+
+
+def _guided_timeline(
+    plan: SchedulePlan,
+    preferences: SchedulePreferences,
+) -> List[str]:
+    lines = [
+        (
+            f"- {preferences.work_start} · 开始"
+            f"{TASK_TYPE_LABELS[preferences.task_type]}，先完成最需要连续注意力的部分"
+        )
+    ]
+    for event in plan.events:
+        if event.kind == "warmup":
+            label = PROVIDER_LABEL.get(event.agent, event.agent)
+            lines.append(
+                f"- {_fmt_time(event.at)} · **{label}** 提前准备可用窗口，减少开工等待"
+            )
+        elif event.kind == "recovery" and plan.work_start <= event.at <= plan.work_end:
+            label = PROVIDER_LABEL.get(event.agent, event.agent)
+            lines.append(
+                f"- {_fmt_time(event.at)} · **{label}** 预计恢复，可承接下一段工作"
+            )
+    for relay in plan.relay_points:
+        lines.append(f"- {_fmt_time(relay.at)} · {relay.note}")
+    if not plan.relay_points:
+        lines.append("- 中途不安排固定接力点，尽量减少打断")
+    lines.sort(key=_timeline_sort_key)
+    return lines
+
+
+def _timeline_sort_key(line: str) -> str:
+    marker = line.removeprefix("- ") if hasattr(str, "removeprefix") else line[2:]
+    return marker[:5]
 
 
 def push_schedule_card(
