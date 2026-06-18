@@ -13,7 +13,8 @@ categories: [项目, BACKLOG]
 
 ## Phase 2 · 闭环增强
 
-- [ ] **Codex 接入**：感知 + 预热都加 Codex provider（端点已确认 `wham/usage`，token 走 `codex exec "ok"` 刷新，一箭双雕：既刷 token 又 warm-up）→ **详细设计见 [[设计_Codex_provider]]**（Phase 2 首选，分 P2-a 只做 warmup 规避计费 / P2-b 加感知+自愈）
+- [x] **Codex 接入**：感知 + 预热都加 Codex provider（端点已确认 `wham/usage`，token 走 `codex exec` 刷新/预热）→ 已进入代码实现，历史设计见 [[设计_Codex_provider]]
+- [ ] **V2 Scheduler 正式化**：以 [[PRD_V2_SCHEDULER]] / [[DEV_PLAN_V2]] / [[TEST_PLAN_V2]] 为准，完成 bridge、卡片视觉、采用计划、主动 one-up 推送
 - [ ] **第二触发场景**：把"防浪费"与"新窗口开了"拆成两条独立规则，分别推不同卡片
 - [ ] **多账号 / 多 Workspace**：bridge 已支持，按需点亮
 
@@ -32,7 +33,7 @@ categories: [项目, BACKLOG]
 
 ## 待验证 / 风险跟踪
 
-- [ ] `lark-channel-bridge` 是否支持飞书卡片 **action 回调**（决定 FR3 走按钮还是"回复『开』"）
+- [ ] `lark-channel-bridge` 初始化并在线接收飞书卡片 **action 回调**（按钮是正式主路径；文字 router 仅兜底）
 - [ ] `lark-channel-bridge` 升级 0.1.33 → 0.3.0 的收益与风险
 - [ ] 6/15 计费红线落地后，实测 `claude -p` 预热的真实扣费情况
 
