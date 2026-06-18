@@ -8,6 +8,7 @@ import os
 import plistlib
 import subprocess
 import sys
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -21,6 +22,7 @@ class PlanTaskError(Exception):
 
 def plan_record(plan: SchedulePlan) -> Dict[str, Any]:
     core = {
+        "plan_version": plan.plan_version,
         "mode": plan.mode,
         "agents": list(plan.agents),
         "work_start": plan.work_start.isoformat(),
@@ -35,6 +37,15 @@ def plan_record(plan: SchedulePlan) -> Dict[str, Any]:
                 "note": event.note,
             }
             for event in plan.events
+        ],
+        "preferences": asdict(plan.preferences) if plan.preferences else None,
+        "relay_count": plan.relay_count,
+        "relay_points": [
+            {
+                "at": event.at.isoformat(),
+                "note": event.note,
+            }
+            for event in plan.relay_points
         ],
     }
     digest = hashlib.sha256(

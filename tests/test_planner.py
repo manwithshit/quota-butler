@@ -2,7 +2,14 @@ import unittest
 from datetime import date, datetime, timedelta
 
 from quota_butler.config import Config
-from quota_butler.planner import build_plan, normalize_mode, parse_agents, plan_from_config
+from quota_butler.planner import (
+    build_plan,
+    normalize_mode,
+    parse_agents,
+    plan_from_config,
+    plan_from_preferences,
+)
+from quota_butler.schedule_flow import SchedulePreferences
 
 
 class TestPlanner(unittest.TestCase):
@@ -73,6 +80,58 @@ class TestPlanner(unittest.TestCase):
             agents=("codex",),
         )
         self.assertEqual(plan.agents, ("codex",))
+
+    def test_guided_intensity_controls_advisory_relay_count(self):
+        counts = {}
+        for intensity in ("light", "normal", "high"):
+            plan = plan_from_preferences(
+                SchedulePreferences(intensity=intensity),
+                target_date=date(2026, 6, 18),
+                agents=("codex",),
+            )
+            counts[intensity] = plan.relay_count
+
+        self.assertEqual(counts, {
+            "light": 0,
+            "normal": 1,
+            "high": 3,
+        })
+
+    def test_guided_plan_is_versioned_and_retains_preferences(self):
+        prefs = SchedulePreferences(
+            task_type="research",
+            intensity="normal",
+            work_start="10:00",
+            work_end="18:00",
+        )
+
+        plan = plan_from_preferences(
+            prefs,
+            target_date=date(2026, 6, 18),
+            agents=("cc", "codex"),
+        )
+
+        self.assertEqual(plan.plan_version, 2)
+        self.assertEqual(plan.preferences, prefs)
+        self.assertEqual(plan.work_start, datetime(2026, 6, 18, 10, 0))
+        self.assertEqual(plan.work_end, datetime(2026, 6, 18, 18, 0))
+
+    def test_guided_relay_notes_reflect_task_type(self):
+        expected = {
+            "coding": "代码实现与测试",
+            "content": "创作与审稿",
+            "research": "资料与结论",
+            "mixed": "当前任务与下一阶段",
+        }
+
+        for task_type, phrase in expected.items():
+            plan = plan_from_preferences(
+                SchedulePreferences(task_type=task_type, intensity="normal"),
+                target_date=date(2026, 6, 18),
+                agents=("codex",),
+            )
+            self.assertEqual(plan.relay_count, 1)
+            self.assertIn(phrase, plan.relay_points[0].note)
 
 
 if __name__ == "__main__":

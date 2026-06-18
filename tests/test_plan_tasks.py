@@ -2,7 +2,7 @@ import os
 import plistlib
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 
 from quota_butler.config import Config
@@ -13,7 +13,8 @@ from quota_butler.plan_tasks import (
     install_plan_tasks,
     plan_record,
 )
-from quota_butler.planner import build_plan
+from quota_butler.planner import build_plan, plan_from_preferences
+from quota_butler.schedule_flow import SchedulePreferences
 
 
 class TestPlanRecord(unittest.TestCase):
@@ -31,6 +32,20 @@ class TestPlanRecord(unittest.TestCase):
         self.assertEqual(first["plan_id"], second["plan_id"])
         self.assertEqual(first["status"], "proposed")
         self.assertTrue(any(event["kind"] == "warmup" for event in first["events"]))
+
+    def test_guided_plan_record_contains_version_preferences_and_relays(self):
+        plan = plan_from_preferences(
+            SchedulePreferences(task_type="coding", intensity="high"),
+            target_date=date(2026, 6, 19),
+            agents=("codex",),
+        )
+
+        record = plan_record(plan)
+
+        self.assertEqual(record["plan_version"], 2)
+        self.assertEqual(record["preferences"]["task_type"], "coding")
+        self.assertEqual(record["relay_count"], 3)
+        self.assertEqual(len(record["relay_points"]), 3)
 
     @mock.patch(
         "quota_butler.plan_tasks._local_timezone",
