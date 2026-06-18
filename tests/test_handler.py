@@ -136,6 +136,7 @@ class TestHandler(unittest.TestCase):
         payload = {
             "action": "adopt_schedule",
             "plan": {
+                "plan_version": 2,
                 "plan_id": "p1",
                 "mode": "balanced",
                 "agents": ["cc", "codex"],
@@ -177,6 +178,7 @@ class TestHandler(unittest.TestCase):
         payload = {
             "action": "adopt_schedule",
             "plan": {
+                "plan_version": 2,
                 "plan_id": "p1",
                 "mode": "balanced",
                 "agents": ["cc"],
@@ -198,6 +200,40 @@ class TestHandler(unittest.TestCase):
         install.assert_not_called()
         self.assertIn("Claude Code", push_receipt.call_args.args[0])
         self.assertIn("不可用", push_receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
+    @mock.patch("quota_butler.handler.install_plan_tasks")
+    def test_adopt_schedule_rejects_legacy_plan(
+        self, install, get_provider, push_receipt
+    ):
+        install.return_value = []
+        get_provider.return_value.read_usage.return_value = mock.Mock()
+        payload = {
+            "action": "adopt_schedule",
+            "plan": {
+                "plan_id": "legacy",
+                "mode": "balanced",
+                "agents": ["codex"],
+                "work_start": "2026-06-19T09:00:00+00:00",
+                "work_end": "2026-06-19T17:00:00+00:00",
+                "events": [
+                    {
+                        "agent": "codex",
+                        "kind": "warmup",
+                        "at": "2026-06-19T08:30:00+00:00",
+                    }
+                ],
+            },
+        }
+
+        rc = handler.handle(payload, config_path=self.cfg_path)
+
+        self.assertEqual(rc, 4)
+        get_provider.assert_not_called()
+        install.assert_not_called()
+        self.assertIn("旧计划已失效", push_receipt.call_args.args[0])
+        self.assertIn("重新规划", push_receipt.call_args.args[0])
 
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.cancel_plan_tasks")
