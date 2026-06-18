@@ -15,7 +15,7 @@ from quota_butler.notify import (
     usage_bar,
     usage_status,
 )
-from quota_butler.planner import build_plan
+from quota_butler.planner import build_plan, plan_from_preferences
 from quota_butler.providers.base import Usage, WindowUsage
 from quota_butler.rules import Decision
 from quota_butler.schedule_flow import SchedulePreferences
@@ -220,39 +220,60 @@ class TestScheduleCard(unittest.TestCase):
             ["generate", "task", "intensity", "time"],
         )
 
-    def test_schedule_card_renders_human_agent_collaboration_timeline(self):
-        start = datetime(2026, 6, 18, 9, 0, tzinfo=timezone.utc)
-        plan = build_plan(
-            mode="balanced",
-            agents=("cc", "codex"),
-            work_start=start,
-            work_end=start + timedelta(hours=8),
+    def test_schedule_card_is_human_readable_and_shows_trust_metrics(self):
+        plan = plan_from_preferences(
+            SchedulePreferences(
+                task_type="coding",
+                intensity="normal",
+                work_start="09:00",
+                work_end="17:00",
+            ),
+            target_date=date(2026, 6, 19),
+            agents=("codex",),
         )
         card = build_schedule_card(plan)
         markdown = _card_markdown(card)
 
-        self.assertIn("协作时间线", markdown)
-        self.assertIn("你主导", markdown)
-        self.assertIn("Agent 接力", markdown)
-        self.assertIn("深度创作", markdown)
-        self.assertIn("CAS", markdown)
+        self.assertIn("09:00–17:00", markdown)
+        self.assertIn("本次使用：**Codex**", markdown)
+        self.assertNotIn("Claude Code", markdown)
+        self.assertIn("计划覆盖率：**100%**", markdown)
+        self.assertIn("预计空档：**0 分钟**", markdown)
+        self.assertIn("预计接力：**1 次**", markdown)
+        self.assertIn("代码实现与测试", markdown)
+        self.assertIn("按当前额度窗口估算", markdown)
+        self.assertNotIn("CAS", markdown)
 
-    def test_schedule_card_surfaces_agent_degradation_warning(self):
-        start = datetime(2026, 6, 18, 9, 0, tzinfo=timezone.utc)
-        plan = build_plan(
-            mode="balanced",
+    def test_schedule_card_has_exactly_three_required_actions(self):
+        plan = plan_from_preferences(
+            SchedulePreferences(task_type="content", intensity="high"),
+            target_date=date(2026, 6, 19),
             agents=("codex",),
-            work_start=start,
-            work_end=start + timedelta(hours=8),
+        )
+        card = build_schedule_card(plan)
+        values = _callback_values(card)
+
+        self.assertEqual(
+            [value["action"] for value in values],
+            ["adopt_schedule", "schedule_flow", "schedule_remind_only"],
+        )
+        adjust = values[1]
+        self.assertEqual(adjust["step"], "summary")
+        self.assertEqual(adjust["preferences"]["task_type"], "content")
+        self.assertEqual(values[0]["plan"]["plan_version"], 2)
+
+    def test_schedule_card_never_surfaces_unavailable_agent_warning(self):
+        plan = plan_from_preferences(
+            SchedulePreferences(),
+            target_date=date(2026, 6, 19),
+            agents=("codex",),
         )
         card = build_schedule_card(
             plan,
-            warnings=("Claude Code 不可用：token 已过期，已降级为 Codex-only",),
+            warnings=("Claude Code 不可用：token 已过期",),
         )
 
-        markdown = _card_markdown(card)
-        self.assertIn("计划已降级", markdown)
-        self.assertIn("Claude Code 不可用", markdown)
+        self.assertNotIn("Claude Code 不可用", _card_markdown(card))
 
     def test_active_plan_card_lists_pending_tasks_and_cancel_action(self):
         card = build_active_plan_card({
