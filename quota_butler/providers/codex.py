@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -35,16 +36,25 @@ class CodexProvider(Provider):
 
     def read_usage(self) -> Usage:
         token, account_id = self._read_auth()
-        try:
-            raw = self._fetch_usage(token, account_id)
-        except ProviderError as e:
-            if isinstance(e.__cause__, urllib.error.HTTPError) and e.__cause__.code == 401:
-                print("[Codex] Token expired (401). Attempting to auto-refresh token...")
-                self._refresh_token()
-                # Reload credentials and retry
-                token, account_id = self._read_auth()
+        refreshed = False
+        server_retries = 1
+        while True:
+            try:
                 raw = self._fetch_usage(token, account_id)
-            else:
+                break
+            except ProviderError as e:
+                cause = e.__cause__
+                code = cause.code if isinstance(cause, urllib.error.HTTPError) else None
+                if code == 401 and not refreshed:
+                    refreshed = True
+                    print("[Codex] Token expired (401). Attempting to auto-refresh token...")
+                    self._refresh_token()
+                    token, account_id = self._read_auth()
+                    continue
+                if code is not None and 500 <= code < 600 and server_retries > 0:
+                    server_retries -= 1
+                    time.sleep(0.5)
+                    continue
                 raise
         return self._parse(raw)
 
