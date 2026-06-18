@@ -79,6 +79,7 @@ def _button(text: str, btn_type: str, value: Dict[str, Any]) -> Dict[str, Any]:
         "tag": "button",
         "text": {"tag": "plain_text", "content": text},
         "type": btn_type,
+        "width": "fill",
         "behaviors": [{"type": "callback", "value": value}],
     }
 
@@ -333,6 +334,66 @@ def push_oneup_card(
 
 # ---- V2 调度计划卡 ------------------------------------------------------
 
+def build_schedule_scenario_card(
+    target_date: date,
+    preferences: SchedulePreferences,
+    *,
+    return_step: str,
+    error: str = "",
+) -> Dict[str, Any]:
+    intro = [
+        "**先认识一下你的日常使用场景**",
+        "",
+        "例如：独立开发产品、写小红书内容、调研 AI 工具。以后可以随时修改。",
+    ]
+    if error:
+        intro.extend(["", f"⚠️ {error}"])
+    field: Dict[str, Any] = {
+        "tag": "input",
+        "element_id": "daily_scenario_input",
+        "name": "daily_scenario",
+        "required": True,
+        "width": "fill",
+        "placeholder": {
+            "tag": "plain_text",
+            "content": "请输入你的日常 AI 使用场景",
+        },
+    }
+    if preferences.daily_scenario:
+        field["default_value"] = preferences.daily_scenario
+    submit_value = flow_payload(
+        step="scenario_saved",
+        target_date=target_date,
+        preferences=preferences,
+        return_step=return_step,
+    )
+    return {
+        "schema": "2.0",
+        "config": {"summary": {"content": "Quota Butler：配置日常使用场景"}},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": "\n".join(intro)},
+                {
+                    "tag": "form",
+                    "name": "schedule_scenario_form",
+                    "direction": "vertical",
+                    "elements": [
+                        field,
+                        {
+                            "tag": "button",
+                            "name": "submit_schedule_scenario",
+                            "text": {"tag": "plain_text", "content": "保存并继续"},
+                            "type": "primary",
+                            "form_action_type": "submit",
+                            "behaviors": [{"type": "callback", "value": submit_value}],
+                        },
+                    ],
+                },
+            ]
+        },
+    }
+
+
 def build_schedule_task_card(
     target_date: date,
     preferences: SchedulePreferences = SchedulePreferences(),
@@ -457,9 +518,15 @@ def build_schedule_summary_card(
     target_date: date,
     preferences: SchedulePreferences,
 ) -> Dict[str, Any]:
+    scenario_line = (
+        f"- 日常场景：**{_markdown_inline(preferences.daily_scenario)}**"
+        if preferences.daily_scenario else
+        "- 日常场景：**尚未设置**"
+    )
     markdown = "\n".join([
         "**确认明天的安排偏好**",
         "",
+        scenario_line,
         f"- 主要任务：**{TASK_TYPE_LABELS[preferences.task_type]}**",
         f"- 工作强度：**{INTENSITY_LABELS[preferences.intensity]}**",
         f"- 工作时间：**{preferences.work_start}–{preferences.work_end}**",
@@ -470,6 +537,7 @@ def build_schedule_summary_card(
         ("修改任务", "default", "task"),
         ("修改强度", "default", "intensity"),
         ("修改时间", "default", "time"),
+        ("修改场景", "default", "scenario"),
     ]
     return {
         "schema": "2.0",
@@ -477,26 +545,18 @@ def build_schedule_summary_card(
         "body": {
             "elements": [
                 {"tag": "markdown", "content": markdown},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {
-                            "tag": "column",
-                            "elements": [
-                                _button(
-                                    label,
-                                    button_type,
-                                    flow_payload(
-                                        step=step,
-                                        target_date=target_date,
-                                        preferences=preferences,
-                                    ),
-                                )
-                            ],
-                        }
-                        for label, button_type, step in actions
-                    ],
-                },
+                *_button_grid([
+                    _button(
+                        label,
+                        button_type,
+                        flow_payload(
+                            step=step,
+                            target_date=target_date,
+                            preferences=preferences,
+                        ),
+                    )
+                    for label, button_type, step in actions
+                ]),
             ]
         },
     }
@@ -528,16 +588,32 @@ def _guided_choice_card(
                     "tag": "markdown",
                     "content": f"**{title}**\n\n{description}",
                 },
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {"tag": "column", "elements": [button]}
-                        for button in buttons
-                    ],
-                },
+                *_button_grid(buttons),
             ]
         },
     }
+
+
+def _button_grid(
+    buttons: Sequence[Dict[str, Any]],
+    *,
+    columns: int = 2,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for start in range(0, len(buttons), columns):
+        rows.append({
+            "tag": "column_set",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [button],
+                }
+                for button in buttons[start:start + columns]
+            ],
+        })
+    return rows
 
 
 def build_schedule_card(
@@ -567,6 +643,11 @@ def build_schedule_card(
             f"共安排 **{plan.relay_count} 次接力**。"
         ),
         f"- 本次使用：**{agent_labels}**",
+        (
+            f"- 日常场景：**{_markdown_inline(preferences.daily_scenario)}**"
+            if preferences.daily_scenario else
+            "- 日常场景：**未设置**"
+        ),
         f"- 主要任务：**{TASK_TYPE_LABELS[preferences.task_type]}**",
         f"- 工作强度：**{INTENSITY_LABELS[preferences.intensity]}**",
         "",
@@ -594,14 +675,11 @@ def build_schedule_card(
         "body": {
             "elements": [
                 {"tag": "markdown", "content": "\n".join(lines)},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {"tag": "column", "elements": [_button("采用计划", "primary", adopt_value)]},
-                        {"tag": "column", "elements": [_button("调整设置", "default", adjust_value)]},
-                        {"tag": "column", "elements": [_button("仅提醒", "default", remind_value)]},
-                    ],
-                },
+                *_button_grid([
+                    _button("采用计划", "primary", adopt_value),
+                    _button("调整设置", "default", adjust_value),
+                    _button("仅提醒", "default", remind_value),
+                ]),
             ]
         },
     }
@@ -644,6 +722,13 @@ def _guided_timeline(
 def _timeline_sort_key(line: str) -> str:
     marker = line.removeprefix("- ") if hasattr(str, "removeprefix") else line[2:]
     return marker[:5]
+
+
+def _markdown_inline(value: str) -> str:
+    text = str(value).replace("\\", "\\\\")
+    for char in ("*", "_", "~", "`", "[", "]", "(", ")"):
+        text = text.replace(char, f"\\{char}")
+    return text
 
 
 def push_schedule_card(

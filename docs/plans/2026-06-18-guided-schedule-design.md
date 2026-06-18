@@ -19,7 +19,7 @@
 {
   "cmd": "quota",
   "action": "schedule_flow",
-  "flow_version": 2,
+  "flow_version": 3,
   "step": "intensity",
   "target_date": "2026-06-19",
   "preferences": {

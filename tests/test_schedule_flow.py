@@ -12,6 +12,9 @@ from quota_butler.schedule_flow import (
 
 
 class TestSchedulePreferences(unittest.TestCase):
+    def test_guided_flow_version_is_three(self):
+        self.assertEqual(FLOW_VERSION, 3)
+
     def test_defaults_are_normal_mixed_work_from_nine_to_five(self):
         prefs = SchedulePreferences()
 
@@ -19,6 +22,7 @@ class TestSchedulePreferences(unittest.TestCase):
         self.assertEqual(prefs.intensity, "normal")
         self.assertEqual(prefs.work_start, "09:00")
         self.assertEqual(prefs.work_end, "17:00")
+        self.assertEqual(prefs.daily_scenario, "")
 
     def test_parse_preferences_normalizes_chinese_labels(self):
         prefs = parse_preferences({
@@ -26,12 +30,20 @@ class TestSchedulePreferences(unittest.TestCase):
             "intensity": "高强度",
             "work_start": "10:05",
             "work_end": "18:30",
+            "daily_scenario": "独立开发和内容创作",
         })
 
         self.assertEqual(prefs.task_type, "coding")
         self.assertEqual(prefs.intensity, "high")
         self.assertEqual(prefs.work_start, "10:05")
         self.assertEqual(prefs.work_end, "18:30")
+        self.assertEqual(prefs.daily_scenario, "独立开发和内容创作")
+
+    def test_daily_scenario_is_trimmed_and_length_limited(self):
+        prefs = parse_preferences({"daily_scenario": "  独立开发产品  "})
+        self.assertEqual(prefs.daily_scenario, "独立开发产品")
+        with self.assertRaisesRegex(ValueError, "使用场景"):
+            parse_preferences({"daily_scenario": "x" * 121})
 
     def test_parse_preferences_accepts_picker_values_with_timezone_suffix(self):
         prefs = parse_preferences({
@@ -65,6 +77,7 @@ class TestSchedulePreferences(unittest.TestCase):
             intensity="light",
             work_start="10:00",
             work_end="16:00",
+            daily_scenario="研究 AI 工具",
         )
 
         payload = flow_payload(
@@ -83,6 +96,7 @@ class TestSchedulePreferences(unittest.TestCase):
             "intensity": "light",
             "work_start": "10:00",
             "work_end": "16:00",
+            "daily_scenario": "研究 AI 工具",
         })
 
     def test_validate_flow_context_rejects_old_version_and_past_date(self):

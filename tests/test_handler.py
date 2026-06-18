@@ -8,6 +8,7 @@ from unittest import mock
 
 from quota_butler import handler
 from quota_butler import config as config_mod
+from quota_butler.schedule_flow import FLOW_VERSION
 
 
 def _config_file(chat_id="oc_test"):
@@ -28,7 +29,7 @@ def _config_file(chat_id="oc_test"):
 def _guided_generate_payload():
     return {
         "action": "schedule_flow",
-        "flow_version": 2,
+        "flow_version": FLOW_VERSION,
         "step": "generate",
         "target_date": (date.today() + timedelta(days=1)).isoformat(),
         "preferences": {
@@ -92,25 +93,30 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(rc, 1)
 
     @mock.patch("quota_butler.handler.push_guided_schedule_card")
-    @mock.patch("quota_butler.handler.build_schedule_task_card")
+    @mock.patch("quota_butler.handler.build_schedule_scenario_card")
     @mock.patch("quota_butler.handler.get_provider")
     @mock.patch("quota_butler.handler.plan_from_config")
-    def test_schedule_intent_starts_guided_flow_for_tomorrow(
-        self, plan_from_config, get_provider, build_task, push
+    def test_first_schedule_intent_asks_for_daily_scenario(
+        self, plan_from_config, get_provider, build_scenario, push
     ):
         card = {"schema": "2.0"}
-        build_task.return_value = card
+        build_scenario.return_value = card
 
         rc = handler.handle(
-            {"action": "schedule_intent", "intent": "帮我安排明天"},
+            {
+                "action": "schedule_intent",
+                "intent": "帮我安排明天",
+                "_operator_open_id": "ou_alice",
+            },
             config_path=self.cfg_path,
         )
 
         self.assertEqual(rc, 0)
         self.assertEqual(
-            build_task.call_args.args[0],
+            build_scenario.call_args.args[0],
             date.today() + timedelta(days=1),
         )
+        self.assertEqual(build_scenario.call_args.kwargs["return_step"], "task")
         push.assert_called_once_with(
             card,
             mock.ANY,
@@ -120,6 +126,126 @@ class TestHandler(unittest.TestCase):
         plan_from_config.assert_not_called()
 
     @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_task_card")
+    def test_returning_user_skips_scenario_on_schedule_intent(
+        self, build_task, push
+    ):
+        from quota_butler import state as state_mod
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                schedule_profiles={
+                    "ou_alice": {"daily_scenario": "独立开发产品"},
+                }
+            ),
+        )
+        card = {"schema": "2.0"}
+        build_task.return_value = card
+
+        rc = handler.handle(
+            {
+                "action": "schedule_intent",
+                "intent": "帮我安排明天",
+                "_operator_open_id": "ou_alice",
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        prefs = build_task.call_args.args[1]
+        self.assertEqual(prefs.daily_scenario, "独立开发产品")
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_scenario_card")
+    def test_another_user_still_gets_first_use_scenario(
+        self, build_scenario, push
+    ):
+        from quota_butler import state as state_mod
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                schedule_profiles={
+                    "ou_alice": {"daily_scenario": "独立开发产品"},
+                }
+            ),
+        )
+        build_scenario.return_value = {"schema": "2.0"}
+
+        rc = handler.handle(
+            {
+                "action": "schedule_intent",
+                "intent": "帮我安排明天",
+                "_operator_open_id": "ou_bob",
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        build_scenario.assert_called_once()
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_task_card")
+    def test_scenario_form_is_saved_per_user_and_advances_to_task(
+        self, build_task, push
+    ):
+        card = {"schema": "2.0"}
+        build_task.return_value = card
+
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": FLOW_VERSION,
+                "step": "scenario_saved",
+                "return_step": "task",
+                "target_date": (date.today() + timedelta(days=1)).isoformat(),
+                "_operator_open_id": "ou_alice",
+                "preferences": {
+                    "task_type": "mixed",
+                    "intensity": "normal",
+                    "work_start": "09:00",
+                    "work_end": "17:00",
+                    "daily_scenario": "",
+                },
+                "form_value": {
+                    "daily_scenario": "  独立开发产品和内容创作  ",
+                },
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 0)
+        prefs = build_task.call_args.args[1]
+        self.assertEqual(prefs.daily_scenario, "独立开发产品和内容创作")
+        from quota_butler import state as state_mod
+        saved = state_mod.load(self.state_path).schedule_profiles
+        self.assertEqual(
+            saved["ou_alice"]["daily_scenario"],
+            "独立开发产品和内容创作",
+        )
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
+    @mock.patch("quota_butler.handler.build_schedule_scenario_card")
+    def test_summary_can_reconfigure_scenario_by_click(
+        self, build_scenario, push
+    ):
+        card = {"schema": "2.0"}
+        build_scenario.return_value = card
+        payload = _guided_generate_payload()
+        payload.update({
+            "step": "scenario",
+            "_operator_open_id": "ou_alice",
+        })
+
+        rc = handler.handle(payload, config_path=self.cfg_path)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(build_scenario.call_args.kwargs["return_step"], "summary")
+        push.assert_called_once()
+
+    @mock.patch("quota_butler.handler.push_guided_schedule_card")
     @mock.patch("quota_butler.handler.build_schedule_intensity_card")
     def test_schedule_flow_advances_to_requested_step(self, build_card, push):
         card = {"schema": "2.0"}
@@ -127,7 +253,7 @@ class TestHandler(unittest.TestCase):
         rc = handler.handle(
             {
                 "action": "schedule_flow",
-                "flow_version": 2,
+                "flow_version": FLOW_VERSION,
                 "step": "intensity",
                 "target_date": (date.today() + timedelta(days=1)).isoformat(),
                 "preferences": {
@@ -154,7 +280,7 @@ class TestHandler(unittest.TestCase):
         rc = handler.handle(
             {
                 "action": "schedule_flow",
-                "flow_version": 2,
+                "flow_version": FLOW_VERSION,
                 "step": "summary",
                 "target_date": (date.today() + timedelta(days=1)).isoformat(),
                 "preferences": {
@@ -188,7 +314,7 @@ class TestHandler(unittest.TestCase):
         rc = handler.handle(
             {
                 "action": "schedule_flow",
-                "flow_version": 2,
+                "flow_version": FLOW_VERSION,
                 "step": "summary",
                 "target_date": (date.today() + timedelta(days=1)).isoformat(),
                 "preferences": {
