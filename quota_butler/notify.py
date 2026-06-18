@@ -620,9 +620,14 @@ def _guided_timeline(
     for event in plan.events:
         if event.kind == "warmup":
             label = PROVIDER_LABEL.get(event.agent, event.agent)
-            lines.append(
-                f"- {_fmt_time(event.at)} · **{label}** 提前准备可用窗口，减少开工等待"
-            )
+            if event.agent == "codex":
+                lines.append(
+                    f"- {_fmt_time(event.at)} · **{label}** 提前预热，减少开工等待"
+                )
+            else:
+                lines.append(
+                    f"- {_fmt_time(event.at)} · **{label}** 预计可用，作为接力候选"
+                )
         elif event.kind == "recovery" and plan.work_start <= event.at <= plan.work_end:
             label = PROVIDER_LABEL.get(event.agent, event.agent)
             lines.append(

@@ -275,6 +275,19 @@ class TestScheduleCard(unittest.TestCase):
 
         self.assertNotIn("Claude Code 不可用", _card_markdown(card))
 
+    def test_schedule_card_does_not_claim_claude_will_be_preheated(self):
+        plan = plan_from_preferences(
+            SchedulePreferences(),
+            target_date=date(2026, 6, 19),
+            agents=("cc", "codex"),
+        )
+
+        markdown = _card_markdown(build_schedule_card(plan))
+
+        self.assertNotIn("**Claude Code** 提前准备", markdown)
+        self.assertIn("**Claude Code** 预计可用，作为接力候选", markdown)
+        self.assertIn("**Codex** 提前预热", markdown)
+
     def test_active_plan_card_lists_pending_tasks_and_cancel_action(self):
         card = build_active_plan_card({
             "plan_id": "p1",
