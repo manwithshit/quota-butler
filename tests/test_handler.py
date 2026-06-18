@@ -56,6 +56,7 @@ class TestHandler(unittest.TestCase):
             config_path=self.cfg_path,
         )
         self.assertEqual(rc, 0)
+        get_provider.assert_called_once_with("codex")
         fake.warmup.assert_called_once_with("say hi")
         push_receipt.assert_called_once()
         self.assertIn("已开窗", push_receipt.call_args[0][0])
@@ -535,6 +536,55 @@ class TestHandler(unittest.TestCase):
 
         self.assertEqual(rc, 4)
         get_provider.assert_not_called()
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_scheduled_warmup_rejects_non_codex_provider(
+        self, get_provider, push_receipt
+    ):
+        from quota_butler import state as state_mod
+        task = {
+            "scheduled_for": "2026-06-19T08:30:00+00:00",
+            "provider": "cc",
+        }
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                active_plan={
+                    "plan_id": "p1",
+                    "status": "active",
+                    "tasks": [task],
+                }
+            ),
+        )
+
+        rc = handler.handle(
+            {
+                "action": "scheduled_warmup",
+                "plan_id": "p1",
+                "provider": "cc",
+                "scheduled_for": "2026-06-19T08:30:00+00:00",
+            },
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 4)
+        get_provider.assert_not_called()
+        self.assertIn("仅允许 Codex", push_receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_oneup_start_rejects_non_codex_provider(
+        self, get_provider, push_receipt
+    ):
+        rc = handler.handle(
+            {"action": "oneup_start", "provider": "cc"},
+            config_path=self.cfg_path,
+        )
+
+        self.assertEqual(rc, 4)
+        get_provider.assert_not_called()
+        self.assertIn("仅允许 Codex", push_receipt.call_args.args[0])
 
     @mock.patch("quota_butler.handler.push_receipt")
     def test_oneup_snooze_sets_muted_until(self, push_receipt):

@@ -80,13 +80,14 @@ class TestPlanTasks(unittest.TestCase):
             config_path = os.path.join(d, "config.yaml")
             tasks = install_plan_tasks(record, cfg, now=now, config_path=config_path)
 
-            self.assertEqual(len(tasks), 2)
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0]["provider"], "codex")
             self.assertTrue(os.path.exists(tasks[0]["plist_path"]))
             with open(tasks[0]["plist_path"], "rb") as f:
                 plist = plistlib.load(f)
             self.assertIn("scheduled_warmup", " ".join(plist["ProgramArguments"]))
             self.assertIn(config_path, plist["ProgramArguments"])
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 1)
 
     @mock.patch("quota_butler.plan_tasks.subprocess.run")
     def test_install_rolls_back_when_launchctl_fails(self, run):
