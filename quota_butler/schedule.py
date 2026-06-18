@@ -17,7 +17,8 @@ from datetime import date, timedelta
 
 from . import config as config_mod
 from .notify import NotifyError, push_schedule_card
-from .planner import plan_from_config
+from .planner import parse_agents, plan_from_preferences
+from .schedule_flow import SchedulePreferences
 
 DEFAULT_CONFIG = "~/.quota-butler/config.yaml"
 
@@ -26,14 +27,20 @@ def run(config_path: str, *, intent: str = "", dry_run: bool = False) -> int:
     cfg = config_mod.load(config_path)
     target_date = _target_date(intent)
     try:
-        plan = plan_from_config(cfg, intent=intent or None, target_date=target_date)
+        plan = plan_from_preferences(
+            SchedulePreferences(),
+            target_date=target_date,
+            agents=parse_agents(cfg.scheduler_agents),
+        )
     except ValueError as e:
         print(f"[调度] 生成计划失败：{e}")
         return 2
 
     print(
-        f"[调度] {plan.mode} · agents={','.join(plan.agents)} · "
-        f"CAS={plan.cas * 100:.0f}% · waiting={plan.waiting_minutes:.0f}min"
+        f"[调度] agents={','.join(plan.agents)} · "
+        f"计划覆盖率={plan.cas * 100:.0f}% · "
+        f"预计空档={plan.waiting_minutes:.0f}min · "
+        f"预计接力={plan.relay_count}"
     )
     try:
         push_schedule_card(plan, cfg, dry_run=dry_run)
