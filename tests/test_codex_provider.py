@@ -127,6 +127,19 @@ class TestCodexRead(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 2)
         run.assert_called_once()
 
+    @mock.patch("quota_butler.providers.codex.urllib.request.urlopen")
+    def test_read_usage_retries_transient_server_error(self, urlopen):
+        urlopen.side_effect = [
+            urllib.error.HTTPError("u", 500, "server error", {}, None),
+            _http_ok(PAID_USAGE),
+        ]
+
+        with mock.patch("quota_butler.providers.codex.AUTH_PATH", self.auth):
+            usage = CodexProvider().read_usage()
+
+        self.assertEqual(usage.five_hour.utilization, 40.0)
+        self.assertEqual(urlopen.call_count, 2)
+
     def test_auth_missing(self):
         with mock.patch("quota_butler.providers.codex.AUTH_PATH", "/nonexistent/auth.json"):
             with self.assertRaises(ProviderError) as ctx:
