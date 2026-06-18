@@ -38,7 +38,12 @@ from . import state as state_mod
 from .notify import (
     PROVIDER_LABEL,
     NotifyError,
+    build_schedule_intensity_card,
+    build_schedule_summary_card,
+    build_schedule_task_card,
+    build_schedule_time_card,
     push_active_plan_card,
+    push_guided_schedule_card,
     push_receipt,
     push_schedule_card,
     push_status_card,
@@ -50,6 +55,7 @@ from .plan_tasks import (
     validate_plan_record,
 )
 from .planner import parse_agents, plan_from_config
+from .schedule_flow import parse_preferences, validate_flow_context
 from .providers import get_provider
 from .providers.base import ProviderError
 from .window import same_window
@@ -77,30 +83,74 @@ def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
         target_date = date.today()
         if "明天" in intent or "tomorrow" in intent.lower():
             target_date += timedelta(days=1)
-        available, failures = _agent_availability(parse_agents(cfg.scheduler_agents))
-        if not available:
-            detail = "；".join(failures) or "没有可用 Agent"
-            _safe_receipt(f"❌ 无法生成计划：{detail}", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
         try:
-            plan = plan_from_config(
-                cfg,
-                intent=intent or None,
-                target_date=target_date,
-                agents=available,
-            )
-            push_schedule_card(
-                plan,
-                cfg,
-                dry_run=dry_run,
-                warnings=tuple(failures),
-            )
-        except (ValueError, NotifyError) as e:
-            print(f"[回调] 调度计划失败：{e}", file=sys.stderr)
+            card = build_schedule_task_card(target_date)
+            push_guided_schedule_card(card, cfg, dry_run=dry_run)
+        except NotifyError as e:
+            print(f"[回调] 规划引导卡发送失败：{e}", file=sys.stderr)
             state_mod.save(cfg.resolved_state_path, st)
             return 3
-        print(f"[回调] 已发送调度计划：{intent or cfg.scheduler_mode}")
+        print(f"[回调] 已开始规划流程：{target_date.isoformat()}")
+        state_mod.save(cfg.resolved_state_path, st)
+        return 0
+
+    if action == "schedule_flow":
+        try:
+            target_date = validate_flow_context(payload or {})
+        except ValueError:
+            _safe_receipt("规划卡已失效，请重新规划", cfg, dry_run)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 4
+
+        raw_preferences = dict((payload or {}).get("preferences") or {})
+        form_value = (payload or {}).get("form_value")
+        if isinstance(form_value, dict):
+            raw_preferences.update({
+                key: form_value[key]
+                for key in ("work_start", "work_end")
+                if key in form_value
+            })
+        try:
+            preferences = parse_preferences(raw_preferences)
+        except ValueError as e:
+            if not isinstance(form_value, dict):
+                _safe_receipt(f"规划偏好无效：{e}，请重新规划", cfg, dry_run)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 4
+            try:
+                fallback = parse_preferences((payload or {}).get("preferences") or {})
+                card = build_schedule_time_card(
+                    target_date,
+                    fallback,
+                    error=str(e),
+                )
+                push_guided_schedule_card(card, cfg, dry_run=dry_run)
+            except (ValueError, NotifyError) as send_error:
+                print(f"[回调] 时间卡发送失败：{send_error}", file=sys.stderr)
+                state_mod.save(cfg.resolved_state_path, st)
+                return 3
+            state_mod.save(cfg.resolved_state_path, st)
+            return 0
+
+        step = str((payload or {}).get("step") or "")
+        builders = {
+            "task": build_schedule_task_card,
+            "intensity": build_schedule_intensity_card,
+            "time": build_schedule_time_card,
+            "summary": build_schedule_summary_card,
+        }
+        builder = builders.get(step)
+        if builder is None:
+            print(f"[回调] 未知规划步骤={step!r}", file=sys.stderr)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 1
+        try:
+            card = builder(target_date, preferences)
+            push_guided_schedule_card(card, cfg, dry_run=dry_run)
+        except NotifyError as e:
+            print(f"[回调] 规划卡发送失败：{e}", file=sys.stderr)
+            state_mod.save(cfg.resolved_state_path, st)
+            return 3
         state_mod.save(cfg.resolved_state_path, st)
         return 0
 
