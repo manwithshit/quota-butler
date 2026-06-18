@@ -77,6 +77,8 @@ def run(
 
     oneup = None
     for name in agent_order:
+        if name != "codex":
+            continue
         candidate_usage = usages.get(name)
         if candidate_usage is None:
             continue

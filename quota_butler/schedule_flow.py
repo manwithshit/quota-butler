@@ -121,7 +121,7 @@ def _normalize_choice(value: Any, aliases: Mapping[str, str], label: str) -> str
 
 
 def _normalize_hhmm(value: Any) -> str:
-    text = str(value).strip()
+    text = str(value).strip().split()[0]
     parts = text.split(":")
     if len(parts) != 2:
         raise ValueError("时间格式必须为 HH:mm")
