@@ -13,12 +13,29 @@ reset_soon_min: 20
 # 可选叠加（防浪费）：利用率低于此值才提醒；留空 = 关闭。
 # waste_pct: 50
 
+# 感知用哪个 provider：cc（默认）/ codex。
+sense_provider: cc
+
 # 预热用哪个 provider：cc（默认）/ codex。
 # ⚠️ 6/15 起 CC `claude -p` 独立计费；切 codex 走订阅不计费。
 warmup_provider: cc
 
 # 预热消息内容（越短越省）。
 warmup_prompt: say hi
+
+# V2 调度器：sustain（不断粮）/ balanced（平衡）/ savings（节省）。
+scheduler_mode: balanced
+
+# 参与调度的 agent。单 Agent 可写 cc 或 codex；双 Agent 写 cc,codex。
+scheduler_agents: cc,codex
+
+# 通常连续工作多久、几点开始、几点睡觉。调度器用它生成明日计划。
+work_duration_hours: 8
+work_start: "09:00"
+sleep_time: "23:00"
+
+# 采用计划后生成的 launchd 任务文件目录。
+plan_tasks_dir: ~/.quota-butler/plan-tasks
 
 # 静音：true 时只感知+判断，不推送（调试用）。
 muted: false

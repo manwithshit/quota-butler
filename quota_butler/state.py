@@ -7,6 +7,7 @@
   last_notified_reset_at 上次「已推送提醒」对应的 resets_at —— 推送去重的关键
   last_warmed_reset_at   上次「已点开预热」对应的 resets_at —— 防重复预热
   last_action            上次回调动作（warmup / skip），便于日志追溯
+  last_chat_message_id   上次群聊文字命令处理到的 message_id
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -25,6 +26,13 @@ class State:
     last_notified_reset_at: Optional[str] = None
     last_warmed_reset_at: Optional[str] = None
     last_action: Optional[str] = None
+    last_chat_message_id: Optional[str] = None
+    active_plan: Optional[Dict[str, Any]] = None
+    provider_snapshots: Optional[Dict[str, Dict[str, Any]]] = None
+    last_oneup_notified_window: Optional[str] = None
+    muted_until: Optional[str] = None
+    pending_oneup: Optional[Dict[str, Any]] = None
+    last_oneup_started_window: Optional[str] = None
 
 
 def load(path: str) -> State:

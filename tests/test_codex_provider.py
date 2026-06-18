@@ -74,12 +74,58 @@ class TestCodexRead(unittest.TestCase):
         self.assertEqual(usage.seven_day.window_seconds, 604800)    # 7天
 
     @mock.patch("quota_butler.providers.codex.urllib.request.urlopen")
-    def test_http_401(self, urlopen):
-        urlopen.side_effect = urllib.error.HTTPError("u", 401, "no", {}, None)
+    def test_zero_usage_null_reset_at(self, urlopen):
+        payload = {
+            "plan_type": "plus",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 0,
+                    "reset_at": None,
+                    "limit_window_seconds": 18000,
+                },
+                "secondary_window": None,
+            },
+        }
+        urlopen.return_value = _http_ok(payload)
+        with mock.patch("quota_butler.providers.codex.AUTH_PATH", self.auth):
+            usage = CodexProvider().read_usage()
+        self.assertEqual(usage.five_hour.utilization, 0.0)
+        self.assertIsNone(usage.five_hour.resets_at)
+        self.assertEqual(usage.five_hour.window_seconds, 18000)
+
+    @mock.patch("quota_butler.providers.codex.subprocess.run")
+    @mock.patch("quota_butler.providers.codex.urllib.request.urlopen")
+    def test_read_usage_401_auto_heal_success(self, urlopen, run):
+        # 首次调用返回 401，刷新 token 后重试返回正确数据
+        urlopen.side_effect = [
+            urllib.error.HTTPError("u", 401, "unauthorized", {}, None),
+            _http_ok(PAID_USAGE)
+        ]
+        run.return_value = mock.MagicMock(returncode=0, stdout="pong")
+
+        with mock.patch("quota_butler.providers.codex.AUTH_PATH", self.auth):
+            usage = CodexProvider().read_usage()
+
+        self.assertEqual(usage.five_hour.window_seconds, 18000)
+        run.assert_called_once_with(["codex", "exec", "ping"], capture_output=True, text=True, timeout=45)
+
+    @mock.patch("quota_butler.providers.codex.subprocess.run")
+    @mock.patch("quota_butler.providers.codex.urllib.request.urlopen")
+    def test_read_usage_401_auto_heal_failed(self, urlopen, run):
+        # 两次调用均返回 401
+        urlopen.side_effect = [
+            urllib.error.HTTPError("u", 401, "unauthorized", {}, None),
+            urllib.error.HTTPError("u", 401, "unauthorized", {}, None)
+        ]
+        run.return_value = mock.MagicMock(returncode=0, stdout="pong")
+
         with mock.patch("quota_butler.providers.codex.AUTH_PATH", self.auth):
             with self.assertRaises(ProviderError) as ctx:
                 CodexProvider().read_usage()
+
         self.assertIn("401", str(ctx.exception))
+        self.assertEqual(urlopen.call_count, 2)
+        run.assert_called_once()
 
     def test_auth_missing(self):
         with mock.patch("quota_butler.providers.codex.AUTH_PATH", "/nonexistent/auth.json"):
@@ -87,9 +133,19 @@ class TestCodexRead(unittest.TestCase):
                 CodexProvider().read_usage()
         self.assertIn("不存在", str(ctx.exception))
 
-    def test_warmup_not_implemented(self):
-        with self.assertRaises(NotImplementedError):
-            CodexProvider().warmup("hi")
+    @mock.patch("quota_butler.providers.codex.subprocess.run")
+    def test_warmup_success(self, run):
+        run.return_value = mock.MagicMock(returncode=0, stdout="Success warmup response")
+        res = CodexProvider().warmup("hello")
+        self.assertEqual(res, "Success warmup response")
+        run.assert_called_once_with(["codex", "exec", "hello"], capture_output=True, text=True, timeout=120)
+
+    @mock.patch("quota_butler.providers.codex.subprocess.run")
+    def test_warmup_failure(self, run):
+        run.return_value = mock.MagicMock(returncode=1, stderr="Subprocess error")
+        with self.assertRaises(ProviderError) as ctx:
+            CodexProvider().warmup("hello")
+        self.assertIn("退出码 1", str(ctx.exception))
 
 
 if __name__ == "__main__":
