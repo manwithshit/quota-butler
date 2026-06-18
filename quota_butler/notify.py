@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 import math
 import subprocess
-from datetime import datetime
+from dataclasses import replace
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import Config
@@ -21,6 +22,12 @@ from .plan_tasks import plan_record
 from .planner import SchedulePlan
 from .rules import Decision
 from .providers.base import Usage
+from .schedule_flow import (
+    INTENSITY_LABELS,
+    TASK_TYPE_LABELS,
+    SchedulePreferences,
+    flow_payload,
+)
 
 PROVIDER_LABEL = {"cc": "Claude Code", "codex": "Codex"}
 MODE_LABEL = {"sustain": "不断粮模式", "balanced": "平衡模式", "savings": "节省模式"}
@@ -325,6 +332,213 @@ def push_oneup_card(
 
 
 # ---- V2 调度计划卡 ------------------------------------------------------
+
+def build_schedule_task_card(
+    target_date: date,
+    preferences: SchedulePreferences = SchedulePreferences(),
+) -> Dict[str, Any]:
+    choices = [
+        ("编码开发", "coding"),
+        ("内容创作", "content"),
+        ("调研分析", "research"),
+        ("混合任务", "mixed"),
+    ]
+    buttons = [
+        _button(
+            label,
+            "primary" if value == preferences.task_type else "default",
+            flow_payload(
+                step="intensity",
+                target_date=target_date,
+                preferences=replace(preferences, task_type=value),
+            ),
+        )
+        for label, value in choices
+    ]
+    return _guided_choice_card(
+        "明天主要做什么？",
+        "先选择主要任务类型，计划会据此解释每次接力的目的。",
+        buttons,
+    )
+
+
+def build_schedule_intensity_card(
+    target_date: date,
+    preferences: SchedulePreferences,
+) -> Dict[str, Any]:
+    choices = [
+        ("轻量", "light"),
+        ("正常", "normal"),
+        ("高强度", "high"),
+    ]
+    buttons = [
+        _button(
+            label,
+            "primary" if value == preferences.intensity else "default",
+            flow_payload(
+                step="time",
+                target_date=target_date,
+                preferences=replace(preferences, intensity=value),
+            ),
+        )
+        for label, value in choices
+    ]
+    return _guided_choice_card(
+        "希望保持什么工作强度？",
+        "强度会影响接力频率；轻量模式会尽量减少打断。",
+        buttons,
+    )
+
+
+def build_schedule_time_card(
+    target_date: date,
+    preferences: SchedulePreferences,
+    *,
+    error: str = "",
+) -> Dict[str, Any]:
+    intro = [
+        "**选择工作时间**",
+        "",
+        "时区：**北京时间（Asia/Shanghai）**",
+    ]
+    if error:
+        intro.extend(["", f"⚠️ {error}"])
+    submit_value = flow_payload(
+        step="summary",
+        target_date=target_date,
+        preferences=preferences,
+    )
+    form = {
+        "tag": "form",
+        "name": "schedule_time_form",
+        "direction": "vertical",
+        "elements": [
+            {"tag": "markdown", "content": "**开始时间**"},
+            {
+                "tag": "picker_time",
+                "element_id": "work_start_picker",
+                "name": "work_start",
+                "required": True,
+                "initial_time": preferences.work_start,
+                "width": "fill",
+            },
+            {"tag": "markdown", "content": "**结束时间**"},
+            {
+                "tag": "picker_time",
+                "element_id": "work_end_picker",
+                "name": "work_end",
+                "required": True,
+                "initial_time": preferences.work_end,
+                "width": "fill",
+            },
+            {
+                "tag": "button",
+                "name": "submit_schedule_time",
+                "text": {"tag": "plain_text", "content": "确认时间"},
+                "type": "primary",
+                "form_action_type": "submit",
+                "behaviors": [{"type": "callback", "value": submit_value}],
+            },
+        ],
+    }
+    return {
+        "schema": "2.0",
+        "config": {"summary": {"content": "Quota Butler：选择工作时间"}},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": "\n".join(intro)},
+                form,
+            ]
+        },
+    }
+
+
+def build_schedule_summary_card(
+    target_date: date,
+    preferences: SchedulePreferences,
+) -> Dict[str, Any]:
+    markdown = "\n".join([
+        "**确认明天的安排偏好**",
+        "",
+        f"- 主要任务：**{TASK_TYPE_LABELS[preferences.task_type]}**",
+        f"- 工作强度：**{INTENSITY_LABELS[preferences.intensity]}**",
+        f"- 工作时间：**{preferences.work_start}–{preferences.work_end}**",
+        "- 时区：**北京时间（Asia/Shanghai）**",
+    ])
+    actions = [
+        ("生成计划", "primary", "generate"),
+        ("修改任务", "default", "task"),
+        ("修改强度", "default", "intensity"),
+        ("修改时间", "default", "time"),
+    ]
+    return {
+        "schema": "2.0",
+        "config": {"summary": {"content": "Quota Butler：确认规划偏好"}},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": markdown},
+                {
+                    "tag": "column_set",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "elements": [
+                                _button(
+                                    label,
+                                    button_type,
+                                    flow_payload(
+                                        step=step,
+                                        target_date=target_date,
+                                        preferences=preferences,
+                                    ),
+                                )
+                            ],
+                        }
+                        for label, button_type, step in actions
+                    ],
+                },
+            ]
+        },
+    }
+
+
+def push_guided_schedule_card(
+    card: Dict[str, Any],
+    config: Config,
+    dry_run: bool = False,
+) -> Optional[str]:
+    if dry_run:
+        print("[dry-run] 将发送规划引导卡：")
+        print(json.dumps(card, ensure_ascii=False, indent=2))
+        return None
+    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
+
+
+def _guided_choice_card(
+    title: str,
+    description: str,
+    buttons: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "schema": "2.0",
+        "config": {"summary": {"content": f"Quota Butler：{title}"}},
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**{title}**\n\n{description}",
+                },
+                {
+                    "tag": "column_set",
+                    "columns": [
+                        {"tag": "column", "elements": [button]}
+                        for button in buttons
+                    ],
+                },
+            ]
+        },
+    }
+
 
 def build_schedule_card(
     plan: SchedulePlan,

@@ -1,11 +1,15 @@
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from quota_butler.notify import (
     build_active_plan_card,
     build_card,
     build_command_menu_card,
     build_oneup_card,
+    build_schedule_intensity_card,
+    build_schedule_summary_card,
+    build_schedule_task_card,
+    build_schedule_time_card,
     build_schedule_card,
     build_status_card,
     usage_bar,
@@ -14,6 +18,7 @@ from quota_butler.notify import (
 from quota_butler.planner import build_plan
 from quota_butler.providers.base import Usage, WindowUsage
 from quota_butler.rules import Decision
+from quota_butler.schedule_flow import SchedulePreferences
 
 
 def _card_markdown(card):
@@ -135,6 +140,86 @@ class TestStatusCard(unittest.TestCase):
 
 
 class TestScheduleCard(unittest.TestCase):
+    def test_task_card_buttons_preserve_context_and_advance_to_intensity(self):
+        target = date(2026, 6, 19)
+        card = build_schedule_task_card(target)
+        values = _callback_values(card)
+
+        self.assertEqual(len(values), 4)
+        self.assertEqual(
+            {value["preferences"]["task_type"] for value in values},
+            {"coding", "content", "research", "mixed"},
+        )
+        self.assertTrue(all(value["step"] == "intensity" for value in values))
+        self.assertTrue(all(value["target_date"] == "2026-06-19" for value in values))
+
+    def test_intensity_card_buttons_preserve_task_and_advance_to_time(self):
+        prefs = SchedulePreferences(task_type="coding")
+        card = build_schedule_intensity_card(date(2026, 6, 19), prefs)
+        values = _callback_values(card)
+
+        self.assertEqual(len(values), 3)
+        self.assertEqual(
+            {value["preferences"]["intensity"] for value in values},
+            {"light", "normal", "high"},
+        )
+        self.assertTrue(
+            all(value["preferences"]["task_type"] == "coding" for value in values)
+        )
+        self.assertTrue(all(value["step"] == "time" for value in values))
+
+    def test_time_card_uses_required_native_time_pickers_in_a_form(self):
+        prefs = SchedulePreferences(
+            task_type="research",
+            intensity="high",
+            work_start="10:00",
+            work_end="18:00",
+        )
+        card = build_schedule_time_card(date(2026, 6, 19), prefs)
+        form = next(
+            element for element in card["body"]["elements"]
+            if element.get("tag") == "form"
+        )
+        pickers = [
+            element for element in form["elements"]
+            if element.get("tag") == "picker_time"
+        ]
+
+        self.assertEqual([picker["name"] for picker in pickers], [
+            "work_start",
+            "work_end",
+        ])
+        self.assertEqual([picker["initial_time"] for picker in pickers], [
+            "10:00",
+            "18:00",
+        ])
+        self.assertTrue(all(picker["required"] for picker in pickers))
+        submit = form["elements"][-1]
+        self.assertEqual(submit["form_action_type"], "submit")
+        value = submit["behaviors"][0]["value"]
+        self.assertEqual(value["step"], "summary")
+        self.assertEqual(value["preferences"]["task_type"], "research")
+
+    def test_summary_card_shows_beijing_time_and_edit_actions(self):
+        prefs = SchedulePreferences(
+            task_type="content",
+            intensity="light",
+            work_start="10:00",
+            work_end="16:00",
+        )
+        card = build_schedule_summary_card(date(2026, 6, 19), prefs)
+        markdown = _card_markdown(card)
+        values = _callback_values(card)
+
+        self.assertIn("内容创作", markdown)
+        self.assertIn("轻量", markdown)
+        self.assertIn("10:00–16:00", markdown)
+        self.assertIn("北京时间", markdown)
+        self.assertEqual(
+            [value["step"] for value in values],
+            ["generate", "task", "intensity", "time"],
+        )
+
     def test_schedule_card_renders_human_agent_collaboration_timeline(self):
         start = datetime(2026, 6, 18, 9, 0, tzinfo=timezone.utc)
         plan = build_plan(
