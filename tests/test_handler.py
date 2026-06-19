@@ -278,6 +278,22 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(pending["window_key"], "codex:w1")
         self.assertIn("due_at", pending)
 
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_tomorrow_skip_only_sends_a_light_rest_receipt(self, receipt):
+        rc = handler.handle(
+            {"action": "tomorrow_skip"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        receipt.assert_called_once_with(
+            "好的，收到。好好休息，也是在给大脑充电 🌙",
+            mock.ANY,
+            dry_run=False,
+        )
+        from quota_butler import state as state_mod
+        self.assertIsNone(state_mod.load(self.state_path).active_plan)
+
     @mock.patch("quota_butler.handler.push_status_card")
     @mock.patch("quota_butler.handler.detect_agents")
     def test_query_uses_classified_agent_status(self, detect, push):
