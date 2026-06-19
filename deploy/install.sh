@@ -32,6 +32,7 @@ command -v codex    >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 code
 
 # lark-cli 靠 LARK_CHANNEL 选中"在群里的 bridge bot"；从当前 shell 继承，默认 1
 LARK_CHANNEL_VAL="${LARK_CHANNEL:-1}"
+LARK_CLI_CONFIG_DIR="${LARKSUITE_CLI_CONFIG_DIR:-$HOME/.lark-channel/profiles/codex/lark-cli}"
 
 # --- 2. 读 interval（分钟 → 秒）------------------------------------------
 INTERVAL_MIN=15
@@ -47,6 +48,7 @@ sed -e "s#__PYTHON__#${PYTHON}#g" \
     -e "s#__REPO__#${REPO}#g" \
     -e "s#__PATH__#${DIRS}#g" \
     -e "s#__LARK_CHANNEL__#${LARK_CHANNEL_VAL}#g" \
+    -e "s#__LARK_CLI_CONFIG_DIR__#${LARK_CLI_CONFIG_DIR}#g" \
     -e "s#__INTERVAL__#${INTERVAL_SEC}#g" \
     "$TEMPLATE" > "$PLIST"
 
@@ -58,6 +60,7 @@ echo "✓ 已安装 $LABEL"
 echo "  plist:    $PLIST"
 echo "  python:   $PYTHON"
 echo "  PATH:     $DIRS"
+echo "  lark-cli: $LARK_CLI_CONFIG_DIR"
 echo "  间隔:     ${INTERVAL_MIN} 分钟（${INTERVAL_SEC}s）"
 echo "  日志:     $REPO/quota-butler.log / .err.log"
 echo

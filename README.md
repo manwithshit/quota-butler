@@ -55,4 +55,6 @@ launchctl list | grep com.quota-butler
 
 主任务每隔 `interval_min` 分钟检查一次额度，并在每天 22:00 精确唤醒一次。卡片按钮和文字入口由现有私人 bridge fork 承接，不需要、也不应启动第二个飞书 listener。
 
+安装脚本默认复用 `~/.lark-channel/profiles/codex/lark-cli`，确保 launchd 主动提醒与当前 bridge 使用同一机器人身份。
+
 私人 bridge 配置与验收见 [docs/BRIDGE_SETUP.md](docs/BRIDGE_SETUP.md)。

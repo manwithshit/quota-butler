@@ -29,6 +29,8 @@
         <string>__PATH__</string>
         <key>LARK_CHANNEL</key>
         <string>__LARK_CHANNEL__</string>
+        <key>LARKSUITE_CLI_CONFIG_DIR</key>
+        <string>__LARK_CLI_CONFIG_DIR__</string>
     </dict>
 
     <key>StartInterval</key>
