@@ -1,37 +1,17 @@
-"""V2 AI Agent Scheduler.
-
-The planner turns a lightweight work profile into a deterministic warmup plan.
-It is intentionally pure: no provider calls, no Feishu calls, and no state file
-updates. Runtime entrypoints can render or execute the resulting plan.
-"""
+"""Deterministic V3 tomorrow-plan calculator."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
-from typing import Iterable, List, Optional, Sequence, Tuple
+from datetime import datetime, timedelta
+from typing import Iterable, List, Mapping, Sequence, Tuple
 
-from .config import Config
-from .schedule_flow import SchedulePreferences, validate_work_time
+from .providers.base import Usage
+from .schedule_flow import PlanRequest, normalize_hhmm
 
 DEFAULT_WINDOW_SECONDS = 5 * 3600
 SUPPORTED_AGENTS = ("cc", "codex")
-
-MODE_ALIASES = {
-    "不断粮": "sustain",
-    "不断粮模式": "sustain",
-    "sustain": "sustain",
-    "no-hunger": "sustain",
-    "冲刺": "sustain",
-    "今天冲刺": "sustain",
-    "平衡": "balanced",
-    "平衡模式": "balanced",
-    "balanced": "balanced",
-    "节省": "savings",
-    "节省模式": "savings",
-    "savings": "savings",
-    "save": "savings",
-}
+AGENT_LABELS = {"cc": "Claude Code", "codex": "Codex"}
 
 
 @dataclass(frozen=True)
@@ -39,147 +19,78 @@ class PlanEvent:
     agent: str
     kind: str
     at: datetime
-    note: str = ""
+    purpose: str
+
+    @property
+    def note(self) -> str:
+        return self.purpose
 
 
 @dataclass(frozen=True)
 class SchedulePlan:
-    mode: str
     agents: Tuple[str, ...]
     work_start: datetime
     work_end: datetime
-    cas: float
-    waiting_minutes: float
     events: Tuple[PlanEvent, ...]
-    preferences: Optional[SchedulePreferences] = None
-    relay_points: Tuple[PlanEvent, ...] = ()
-    plan_version: int = 2
+    reason: str
+    request: PlanRequest
+    plan_version: int = 3
 
     @property
     def work_hours(self) -> float:
-        return (self.work_end - self.work_start).total_seconds() / 3600.0
-
-    @property
-    def relay_count(self) -> int:
-        return len(self.relay_points)
-
-
-def plan_from_config(
-    cfg: Config,
-    *,
-    intent: Optional[str] = None,
-    target_date: Optional[date] = None,
-    agents: Optional[Sequence[str]] = None,
-) -> SchedulePlan:
-    mode = normalize_mode(intent or cfg.scheduler_mode)
-    selected_agents = (
-        tuple(_normalize_agent(agent) for agent in agents)
-        if agents is not None
-        else parse_agents(cfg.scheduler_agents)
-    )
-    start = combine_local(target_date or date.today(), cfg.work_start)
-    sleep = combine_local(target_date or date.today(), cfg.sleep_time)
-    if sleep <= start:
-        sleep += timedelta(days=1)
-    duration_end = start + timedelta(hours=cfg.work_duration_hours)
-    end = min(duration_end, sleep)
-    if end <= start:
-        end = start + timedelta(minutes=1)
-    return build_plan(
-        mode=mode,
-        agents=selected_agents,
-        work_start=start,
-        work_end=end,
-    )
-
-
-def plan_from_preferences(
-    preferences: SchedulePreferences,
-    *,
-    target_date: date,
-    agents: Sequence[str],
-) -> SchedulePlan:
-    validate_work_time(preferences.work_start, preferences.work_end)
-    intensity_mode = {
-        "light": "savings",
-        "normal": "balanced",
-        "high": "sustain",
-    }
-    try:
-        mode = intensity_mode[preferences.intensity]
-    except KeyError as exc:
-        raise ValueError(f"unsupported schedule intensity: {preferences.intensity!r}") from exc
-    return build_plan(
-        mode=mode,
-        agents=agents,
-        work_start=combine_local(target_date, preferences.work_start),
-        work_end=combine_local(target_date, preferences.work_end),
-        preferences=preferences,
-    )
+        return (self.work_end - self.work_start).total_seconds() / 3600
 
 
 def build_plan(
-    *,
-    mode: str,
-    agents: Sequence[str],
-    work_start: datetime,
-    work_end: datetime,
-    window_seconds: int = DEFAULT_WINDOW_SECONDS,
-    preferences: Optional[SchedulePreferences] = None,
+    request: PlanRequest,
+    available_usages: Mapping[str, Usage],
 ) -> SchedulePlan:
-    mode = normalize_mode(mode)
-    agents = tuple(_normalize_agent(a) for a in agents)
-    if not agents:
-        raise ValueError("at least one scheduler agent is required")
-    if work_end <= work_start:
-        raise ValueError("work_end must be after work_start")
-
-    window = timedelta(seconds=window_seconds)
-    lead = _lead_time(mode, window)
-    stagger = window / len(agents)
-
-    events: List[PlanEvent] = []
-    intervals: List[Tuple[datetime, datetime]] = []
-    horizon = work_end + window
-
-    for idx, agent in enumerate(agents):
-        warmup_at = work_start - lead + (stagger * idx if len(agents) > 1 else timedelta())
-        if warmup_at > work_start:
-            warmup_at = work_start
-        events.append(PlanEvent(agent, "warmup", warmup_at, "预热窗口"))
-
-        cursor = warmup_at
-        first_recovery = warmup_at + window
-        while cursor < horizon:
-            interval_end = cursor + window
-            intervals.append((max(cursor, work_start), min(interval_end, work_end)))
-            if first_recovery <= horizon:
-                events.append(PlanEvent(agent, "recovery", first_recovery, "预计恢复"))
-            cursor = interval_end
-            first_recovery = cursor + window
-
-    coverage = _covered_seconds(intervals, work_start, work_end)
-    total = (work_end - work_start).total_seconds()
-    waiting = max(total - coverage, 0.0) / 60.0
-    cas = 0.0 if total <= 0 else min(coverage / total, 1.0)
-    events.sort(key=lambda e: (e.at, e.agent, e.kind))
-    relay_points = _relay_points(preferences, work_start, work_end)
-    return SchedulePlan(
-        mode=mode,
-        agents=agents,
-        work_start=work_start,
-        work_end=work_end,
-        cas=cas,
-        waiting_minutes=waiting,
-        events=tuple(events),
-        preferences=preferences,
-        relay_points=relay_points,
+    start = _combine(request, request.work_start)
+    end = _combine(request, request.work_end)
+    if end <= start:
+        raise ValueError("工作结束时间必须晚于开始时间")
+    selected = _select_agents(
+        request.agent_strategy,
+        available_usages,
+        (end - start).total_seconds() / 3600,
     )
 
+    first_agent = selected[0]
+    first_warmup = start - timedelta(hours=2, minutes=30)
+    second_warmup = _real_reset_in_range(
+        available_usages[first_agent],
+        start,
+        end,
+    ) or first_warmup + timedelta(hours=5)
+    events: List[PlanEvent] = [
+        PlanEvent(first_agent, "warmup", first_warmup, "准备第一个窗口"),
+        PlanEvent(first_agent, "warmup", second_warmup, "恢复后准备第二个窗口"),
+    ]
 
-def normalize_mode(value: str) -> str:
-    key = (value or "balanced").strip().lower()
-    return MODE_ALIASES.get(key, key if key in {"sustain", "balanced", "savings"} else "balanced")
+    if len(selected) == 2:
+        relay_at = max(start + timedelta(hours=5) - timedelta(minutes=10), start)
+        if relay_at < end:
+            events.append(
+                PlanEvent(selected[1], "warmup", relay_at, "为长时间工作准备接力窗口")
+            )
+        reason = (
+            f"前半段优先保持 {AGENT_LABELS[first_agent]} 连续工作，"
+            f"后半段由 {AGENT_LABELS[selected[1]]} 接力。"
+        )
+    else:
+        reason = (
+            f"当前区间优先使用单 Agent：{AGENT_LABELS[first_agent]}，"
+            "减少上下文切换。"
+        )
+    events.sort(key=lambda item: (item.at, item.agent))
+    return SchedulePlan(
+        agents=selected,
+        work_start=start,
+        work_end=end,
+        events=tuple(events),
+        reason=reason,
+        request=request,
+    )
 
 
 def parse_agents(value: object) -> Tuple[str, ...]:
@@ -194,16 +105,68 @@ def parse_agents(value: object) -> Tuple[str, ...]:
         agent = _normalize_agent(str(item))
         if agent not in agents:
             agents.append(agent)
-    return tuple(agents or ("cc",))
+    return tuple(agents)
 
 
-def combine_local(day: date, hhmm: str) -> datetime:
-    return datetime.combine(day, parse_hhmm(hhmm))
+def _select_agents(
+    strategy: str,
+    usages: Mapping[str, Usage],
+    work_hours: float,
+) -> Tuple[str, ...]:
+    available = tuple(agent for agent in SUPPORTED_AGENTS if agent in usages)
+    if not available:
+        raise ValueError("当前没有可用于规划的 Agent")
+    if strategy in ("cc", "codex"):
+        if strategy not in usages:
+            raise ValueError(f"{AGENT_LABELS[strategy]} 当前不可用")
+        return (strategy,)
+    if strategy == "both":
+        if len(available) < 2:
+            raise ValueError("Claude Code + Codex 当前不能同时使用")
+        return _rank_agents(available, usages)
+    ranked = _rank_agents(available, usages)
+    if work_hours > 5 and len(ranked) > 1:
+        return ranked
+    return (ranked[0],)
 
 
-def parse_hhmm(value: str) -> time:
-    hh, _, mm = str(value).strip().partition(":")
-    return time(int(hh), int(mm or 0))
+def _rank_agents(
+    agents: Sequence[str],
+    usages: Mapping[str, Usage],
+) -> Tuple[str, ...]:
+    return tuple(
+        sorted(
+            agents,
+            key=lambda agent: (
+                usages[agent].five_hour.utilization,
+                SUPPORTED_AGENTS.index(agent),
+            ),
+        )
+    )
+
+
+def _real_reset_in_range(
+    usage: Usage,
+    start: datetime,
+    end: datetime,
+):
+    reset = usage.five_hour.resets_at
+    if reset is None:
+        return None
+    if reset.tzinfo is not None:
+        reset = reset.astimezone().replace(tzinfo=None)
+    if start <= reset <= end:
+        return reset
+    return None
+
+
+def _combine(request: PlanRequest, hhmm: str) -> datetime:
+    normalized = normalize_hhmm(hhmm)
+    hour, minute = (int(part) for part in normalized.split(":"))
+    return datetime.combine(
+        request.target_date,
+        datetime.min.time().replace(hour=hour, minute=minute),
+    )
 
 
 def _normalize_agent(value: str) -> str:
@@ -213,63 +176,3 @@ def _normalize_agent(value: str) -> str:
     if key not in SUPPORTED_AGENTS:
         raise ValueError(f"unsupported scheduler agent: {value!r}")
     return key
-
-
-def _lead_time(mode: str, window: timedelta) -> timedelta:
-    if mode == "sustain":
-        return window
-    if mode == "savings":
-        return timedelta(minutes=30)
-    return window / 2
-
-
-def _relay_points(
-    preferences: Optional[SchedulePreferences],
-    work_start: datetime,
-    work_end: datetime,
-) -> Tuple[PlanEvent, ...]:
-    if preferences is None:
-        return ()
-    interval_hours = {
-        "light": 8,
-        "normal": 4,
-        "high": 2,
-    }
-    purpose = {
-        "coding": "代码实现与测试",
-        "content": "创作与审稿",
-        "research": "资料与结论",
-        "mixed": "当前任务与下一阶段",
-    }
-    try:
-        interval = timedelta(hours=interval_hours[preferences.intensity])
-        note = f"接力检查：{purpose[preferences.task_type]}"
-    except KeyError as exc:
-        raise ValueError("unsupported guided schedule preference") from exc
-    points: List[PlanEvent] = []
-    cursor = work_start + interval
-    while cursor < work_end:
-        points.append(PlanEvent("", "relay", cursor, note))
-        cursor += interval
-    return tuple(points)
-
-
-def _covered_seconds(
-    intervals: Sequence[Tuple[datetime, datetime]],
-    start: datetime,
-    end: datetime,
-) -> float:
-    clipped = sorted((max(a, start), min(b, end)) for a, b in intervals if b > start and a < end)
-    if not clipped:
-        return 0.0
-
-    total = 0.0
-    cur_start, cur_end = clipped[0]
-    for item_start, item_end in clipped[1:]:
-        if item_start <= cur_end:
-            cur_end = max(cur_end, item_end)
-            continue
-        total += (cur_end - cur_start).total_seconds()
-        cur_start, cur_end = item_start, item_end
-    total += (cur_end - cur_start).total_seconds()
-    return total

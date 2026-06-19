@@ -34,6 +34,15 @@
     <key>StartInterval</key>
     <integer>__INTERVAL__</integer>
 
+    <!-- 精确唤醒一次，发送 22:00 睡前计划询问；主程序自行每日去重。 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>22</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
     <key>RunAtLoad</key>
     <true/>
 

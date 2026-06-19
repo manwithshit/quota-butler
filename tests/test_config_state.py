@@ -2,6 +2,8 @@
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from datetime import time as dtime
 
@@ -11,15 +13,10 @@ from quota_butler.config import QuietHours
 from quota_butler.state import State
 
 SAMPLE = """\
-reset_soon_min: 30
-warmup_provider: cc
-scheduler_mode: sustain
-scheduler_agents: cc,codex
-work_duration_hours: 6
-work_start: "08:00"
-sleep_time: "23:30"
+interval_min: 10
+warmup_prompt: warm up
 muted: true
-waste_pct: 50
+plan_tasks_dir: ~/.quota-butler/tasks
 feishu:
   chat_id: oc_demo123
   user_id: ""
@@ -33,28 +30,23 @@ class TestConfig(unittest.TestCase):
             path = f.name
         try:
             cfg = config_mod.load(path)
-            self.assertEqual(cfg.reset_soon_min, 30)
-            self.assertEqual(cfg.warmup_provider, "cc")
-            self.assertEqual(cfg.scheduler_mode, "sustain")
-            self.assertEqual(cfg.scheduler_agents, "cc,codex")
-            self.assertEqual(cfg.work_duration_hours, 6.0)
-            self.assertEqual(cfg.work_start, "08:00")
-            self.assertEqual(cfg.sleep_time, "23:30")
+            self.assertEqual(cfg.interval_min, 10)
+            self.assertEqual(cfg.warmup_prompt, "warm up")
             self.assertTrue(cfg.muted)
-            self.assertEqual(cfg.waste_pct, 50.0)
+            self.assertEqual(cfg.plan_tasks_dir, "~/.quota-butler/tasks")
             self.assertEqual(cfg.feishu.chat_id, "oc_demo123")
         finally:
             os.unlink(path)
 
     def test_missing_file_uses_defaults(self):
         cfg = config_mod.load("/nonexistent/path/xyz.yaml")
-        self.assertEqual(cfg.reset_soon_min, config_mod.DEFAULTS["reset_soon_min"])
+        self.assertEqual(cfg.interval_min, config_mod.DEFAULTS["interval_min"])
 
     def test_tiny_yaml_fallback_directly(self):
         # 直接打 fallback，证明不依赖 PyYAML
         data = config_mod._tiny_yaml(SAMPLE)
-        self.assertEqual(data["reset_soon_min"], 30)
-        self.assertEqual(data["scheduler_agents"], "cc,codex")
+        self.assertEqual(data["interval_min"], 10)
+        self.assertEqual(data["warmup_prompt"], "warm up")
         self.assertEqual(data["feishu"]["chat_id"], "oc_demo123")
         self.assertTrue(data["muted"])
 
@@ -64,26 +56,45 @@ class TestState(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "sub", "state.json")
             st = State(
-                last_utilization=42.0,
-                last_notified_reset_at="2026-06-13T12:00:00+00:00",
                 active_plan={"plan_id": "plan-1", "status": "active"},
-                schedule_profiles={
-                    "ou_alice": {"daily_scenario": "独立开发产品"},
-                },
+                last_warmed_windows={"cc": "cc:w1"},
+                last_bedtime_prompt_date="2026-06-19",
             )
             state_mod.save(path, st)
             loaded = state_mod.load(path)
-            self.assertEqual(loaded.last_utilization, 42.0)
-            self.assertEqual(loaded.last_notified_reset_at, "2026-06-13T12:00:00+00:00")
             self.assertEqual(loaded.active_plan["plan_id"], "plan-1")
-            self.assertEqual(
-                loaded.schedule_profiles["ou_alice"]["daily_scenario"],
-                "独立开发产品",
-            )
+            self.assertEqual(loaded.last_warmed_windows["cc"], "cc:w1")
+            self.assertEqual(loaded.last_bedtime_prompt_date, "2026-06-19")
 
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")
-        self.assertIsNone(st.last_notified_reset_at)
+        self.assertIsNone(st.active_plan)
+
+    def test_locked_serializes_read_modify_write_sessions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "state.json")
+            entered = []
+            first_has_lock = threading.Event()
+
+            def first():
+                with state_mod.locked(path):
+                    entered.append("first")
+                    first_has_lock.set()
+                    time.sleep(0.05)
+
+            def second():
+                first_has_lock.wait()
+                with state_mod.locked(path):
+                    entered.append("second")
+
+            one = threading.Thread(target=first)
+            two = threading.Thread(target=second)
+            one.start()
+            two.start()
+            one.join()
+            two.join()
+
+            self.assertEqual(entered, ["first", "second"])
 
 
 class TestQuietHours(unittest.TestCase):
@@ -106,7 +117,7 @@ class TestQuietHours(unittest.TestCase):
         self.assertFalse(QuietHours("23:00", "").contains(dtime(23, 30)))
 
     def test_parsed_from_config(self):
-        text = 'reset_soon_min: 20\nquiet_hours:\n  start: "23:00"\n  end: "08:00"\n'
+        text = 'interval_min: 20\nquiet_hours:\n  start: "23:00"\n  end: "08:00"\n'
         cfg = config_mod.from_dict(config_mod._tiny_yaml(text))
         self.assertTrue(cfg.quiet_hours.enabled)
         self.assertEqual(cfg.quiet_hours.start, "23:00")

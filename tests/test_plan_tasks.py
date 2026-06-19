@@ -2,138 +2,116 @@ import os
 import plistlib
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from unittest import mock
 
 from quota_butler.config import Config
 from quota_butler.plan_tasks import (
     PlanTaskError,
-    _parse_datetime,
     cancel_plan_tasks,
     install_plan_tasks,
     plan_record,
+    validate_plan_record,
 )
-from quota_butler.planner import build_plan, plan_from_preferences
-from quota_butler.schedule_flow import SchedulePreferences
+from quota_butler.planner import build_plan
+from quota_butler.providers.base import Usage, WindowUsage
+from quota_butler.schedule_flow import PlanRequest
+
+
+def _plan(strategy="both"):
+    request = PlanRequest(
+        date(2099, 6, 20),
+        "range",
+        "09:00",
+        "18:00",
+        strategy,
+    )
+    usages = {
+        "cc": Usage("cc", WindowUsage(20, None, 5 * 3600)),
+        "codex": Usage("codex", WindowUsage(30, None, 5 * 3600)),
+    }
+    return build_plan(request, usages)
 
 
 class TestPlanRecord(unittest.TestCase):
-    def test_plan_record_contains_stable_id_and_events(self):
-        start = datetime(2026, 6, 19, 9, 0, tzinfo=timezone.utc)
-        plan = build_plan(
-            mode="balanced",
-            agents=("cc", "codex"),
-            work_start=start,
-            work_end=start + timedelta(hours=8),
-        )
-        first = plan_record(plan)
-        second = plan_record(plan)
+    def test_v3_record_contains_only_user_relevant_plan_fields(self):
+        record = plan_record(_plan())
 
-        self.assertEqual(first["plan_id"], second["plan_id"])
-        self.assertEqual(first["status"], "proposed")
-        self.assertTrue(any(event["kind"] == "warmup" for event in first["events"]))
+        self.assertEqual(record["plan_version"], 3)
+        self.assertEqual(record["request"]["agent_strategy"], "both")
+        self.assertIn("purpose", record["events"][0])
+        self.assertNotIn("cas", record)
+        self.assertNotIn("preferences", record)
 
-    def test_guided_plan_record_contains_version_preferences_and_relays(self):
-        plan = plan_from_preferences(
-            SchedulePreferences(task_type="coding", intensity="high"),
-            target_date=date(2026, 6, 19),
-            agents=("codex",),
-        )
-
-        record = plan_record(plan)
-
-        self.assertEqual(record["plan_version"], 2)
-        self.assertEqual(record["preferences"]["task_type"], "coding")
-        self.assertEqual(record["relay_count"], 3)
-        self.assertEqual(len(record["relay_points"]), 3)
-
-    @mock.patch(
-        "quota_butler.plan_tasks._local_timezone",
-        return_value=timezone(timedelta(hours=8)),
-    )
-    def test_naive_plan_time_is_interpreted_as_local_time(self, local_timezone):
-        parsed = _parse_datetime("2026-06-19T06:30:00")
-        self.assertEqual(parsed.hour, 6)
-        self.assertEqual(parsed.utcoffset(), timedelta(hours=8))
+    def test_v2_record_is_rejected(self):
+        with self.assertRaisesRegex(PlanTaskError, "失效"):
+            validate_plan_record(
+                {
+                    "plan_id": "old",
+                    "plan_version": 2,
+                    "work_start": "2099-06-20T09:00:00",
+                    "work_end": "2099-06-20T14:00:00",
+                    "events": [],
+                }
+            )
 
 
 class TestPlanTasks(unittest.TestCase):
     @mock.patch("quota_butler.plan_tasks.subprocess.run")
-    def test_install_writes_future_warmups_and_bootstraps_them(self, run):
+    def test_install_creates_independent_tasks_for_both_agents(self, run):
         run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
-        with tempfile.TemporaryDirectory() as d:
-            cfg = Config(plan_tasks_dir=d)
-            now = datetime(2026, 6, 18, 8, 0, tzinfo=timezone.utc)
-            record = {
-                "plan_id": "abc123",
-                "status": "proposed",
-                "work_start": "2026-06-18T08:00:00+00:00",
-                "work_end": "2026-06-18T13:00:00+00:00",
-                "events": [
-                    {"agent": "cc", "kind": "warmup", "at": "2026-06-18T07:00:00+00:00"},
-                    {"agent": "codex", "kind": "warmup", "at": "2026-06-18T09:30:00+00:00"},
-                    {"agent": "cc", "kind": "recovery", "at": "2026-06-18T12:00:00+00:00"},
-                    {"agent": "codex", "kind": "recovery", "at": "2026-06-18T14:30:00+00:00"},
-                ],
-            }
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config(plan_tasks_dir=directory)
+            record = plan_record(_plan())
 
-            config_path = os.path.join(d, "config.yaml")
-            tasks = install_plan_tasks(record, cfg, now=now, config_path=config_path)
+            tasks = install_plan_tasks(
+                record,
+                config,
+                now=datetime(2099, 6, 19, tzinfo=timezone.utc),
+                config_path=os.path.join(directory, "config.yaml"),
+            )
 
-            self.assertEqual(len(tasks), 1)
-            self.assertEqual(tasks[0]["provider"], "codex")
-            self.assertTrue(os.path.exists(tasks[0]["plist_path"]))
-            with open(tasks[0]["plist_path"], "rb") as f:
-                plist = plistlib.load(f)
-            self.assertIn("scheduled_warmup", " ".join(plist["ProgramArguments"]))
-            self.assertIn(config_path, plist["ProgramArguments"])
-            self.assertEqual(run.call_count, 1)
+            providers = [task["provider"] for task in tasks]
+            self.assertIn("cc", providers)
+            self.assertIn("codex", providers)
+            self.assertEqual(run.call_count, len(tasks))
+            for task in tasks:
+                with open(task["plist_path"], "rb") as stream:
+                    plist = plistlib.load(stream)
+                argv = " ".join(plist["ProgramArguments"])
+                self.assertIn("scheduled_warmup", argv)
+                self.assertIn(task["provider"], argv)
 
     @mock.patch("quota_butler.plan_tasks.subprocess.run")
-    def test_install_rolls_back_when_launchctl_fails(self, run):
-        run.return_value = mock.Mock(returncode=5, stdout="", stderr="bootstrap failed")
-        with tempfile.TemporaryDirectory() as d:
-            cfg = Config(plan_tasks_dir=d)
-            record = {
-                "plan_id": "abc123",
-                "work_start": "2099-06-18T08:00:00+00:00",
-                "work_end": "2099-06-18T13:00:00+00:00",
-                "events": [
-                    {"agent": "codex", "kind": "warmup", "at": "2099-06-18T09:30:00+00:00"},
-                ],
-            }
+    def test_install_rolls_back_all_tasks_when_one_bootstrap_fails(self, run):
+        run.side_effect = [
+            mock.Mock(returncode=0, stdout="", stderr=""),
+            mock.Mock(returncode=5, stdout="", stderr="failed"),
+            mock.Mock(returncode=0, stdout="", stderr=""),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(PlanTaskError):
-                install_plan_tasks(record, cfg)
-            self.assertEqual(os.listdir(d), [])
+                install_plan_tasks(
+                    plan_record(_plan()),
+                    Config(plan_tasks_dir=directory),
+                    now=datetime(2099, 6, 19, tzinfo=timezone.utc),
+                )
+            self.assertFalse([name for name in os.listdir(directory) if name.endswith(".plist")])
 
     @mock.patch("quota_butler.plan_tasks.subprocess.run")
-    def test_install_wraps_launchctl_os_error(self, run):
-        run.side_effect = OSError("launchctl missing")
-        with tempfile.TemporaryDirectory() as d:
-            cfg = Config(plan_tasks_dir=d)
-            record = {
-                "plan_id": "abc123",
-                "work_start": "2099-06-18T08:00:00+00:00",
-                "work_end": "2099-06-18T13:00:00+00:00",
-                "events": [
-                    {"agent": "codex", "kind": "warmup", "at": "2099-06-18T09:30:00+00:00"},
-                ],
-            }
-            with self.assertRaises(PlanTaskError):
-                install_plan_tasks(record, cfg)
-
-    @mock.patch("quota_butler.plan_tasks.subprocess.run")
-    def test_cancel_boots_out_and_removes_task_files(self, run):
+    def test_cancel_removes_all_task_files(self, run):
         run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "task.plist")
-            with open(path, "wb") as f:
-                plistlib.dump({"Label": "com.quota-butler.plan.test"}, f)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for index in range(2):
+                path = os.path.join(directory, f"task-{index}.plist")
+                with open(path, "wb") as stream:
+                    plistlib.dump({"Label": f"task-{index}"}, stream)
+                paths.append({"label": f"task-{index}", "plist_path": path})
 
-            cancel_plan_tasks([{"label": "com.quota-butler.plan.test", "plist_path": path}])
+            cancel_plan_tasks(paths)
 
-            self.assertFalse(os.path.exists(path))
-            run.assert_called_once()
+            self.assertTrue(all(not os.path.exists(item["plist_path"]) for item in paths))
 
 
 if __name__ == "__main__":

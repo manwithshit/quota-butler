@@ -19,14 +19,16 @@ CONFIG="$HOME/.quota-butler/config.yaml"
 PYTHON="$(command -v python3 || true)"
 [ -z "$PYTHON" ] && { echo "✗ 找不到 python3"; exit 1; }
 
-# launchd PATH：把 python3 / lark-cli / claude 所在目录都并进去 + 系统默认
+# launchd PATH：把 python3 / lark-cli / claude / codex 所在目录都并进去 + 系统默认
 collect_dir() { command -v "$1" 2>/dev/null | xargs -I{} dirname {} 2>/dev/null || true; }
-DIRS="$(printf '%s\n%s\n%s\n/usr/local/bin\n/usr/bin\n/bin' \
+DIRS="$(printf '%s\n%s\n%s\n%s\n/usr/local/bin\n/usr/bin\n/bin' \
         "$(dirname "$PYTHON")" "$(collect_dir lark-cli)" "$(collect_dir claude)" \
+        "$(collect_dir codex)" \
         | awk 'NF && !seen[$0]++' | paste -sd: -)"
 
 command -v lark-cli >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 lark-cli —— 推送会失败，确认它在 $DIRS 里"
 command -v claude   >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 claude —— 预热会失败"
+command -v codex    >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 codex —— 预热会失败"
 
 # lark-cli 靠 LARK_CHANNEL 选中"在群里的 bridge bot"；从当前 shell 继承，默认 1
 LARK_CHANNEL_VAL="${LARK_CHANNEL:-1}"

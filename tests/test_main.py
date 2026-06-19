@@ -1,258 +1,180 @@
-import io
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from quota_butler.main import run
-from quota_butler.providers.base import Usage, WindowUsage
+from quota_butler import main
 from quota_butler import state as state_mod
+from quota_butler.agent_status import AgentState, AgentStatus
+from quota_butler.providers.base import Usage, WindowUsage
+
+LOCAL = timezone(timedelta(hours=8))
 
 
-class TestMainRun(unittest.TestCase):
-    def test_invalid_sense_provider_returns_read_failure(self):
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: bogus\n"
-                    f"state_path: {state_path}\n"
-                )
-
-            stderr = io.StringIO()
-            with redirect_stderr(stderr):
-                code = run(config_path)
-
-        self.assertEqual(code, 2)
-        self.assertIn("未知 provider", stderr.getvalue())
-
-    @mock.patch("quota_butler.main.push_oneup_card")
-    @mock.patch("quota_butler.main.get_provider")
-    def test_secondary_agent_can_push_oneup_when_primary_read_fails(
-        self, get_provider, push_oneup
-    ):
-        from quota_butler.providers.base import ProviderError
-
-        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
-        cc = mock.Mock()
-        cc.read_usage.side_effect = ProviderError("Claude token expired")
-        codex = mock.Mock()
-        codex.read_usage.return_value = Usage(
-            provider="codex",
-            five_hour=WindowUsage(0, None, 5 * 3600),
+def _config_file():
+    directory = tempfile.mkdtemp()
+    config_path = os.path.join(directory, "config.yaml")
+    state_path = os.path.join(directory, "state.json")
+    with open(config_path, "w", encoding="utf-8") as stream:
+        stream.write(
+            f"state_path: {state_path}\n"
+            "feishu:\n"
+            "  chat_id: oc_test\n"
         )
-        get_provider.side_effect = lambda name: {"cc": cc, "codex": codex}[name]
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: cc\n"
-                    "scheduler_agents: cc,codex\n"
-                    f"state_path: {state_path}\n"
-                    "feishu:\n"
-                    "  chat_id: oc_test\n"
-                )
-            previous_reset = (now - timedelta(minutes=1)).isoformat()
-            state_mod.save(
-                state_path,
-                state_mod.State(
-                    provider_snapshots={
-                        "codex": {"utilization": 70, "reset_at": previous_reset}
+    return config_path, state_path
+
+
+def _connected(provider, utilization=0, reset=None):
+    return AgentStatus(
+        provider,
+        AgentState.CONNECTED,
+        executable=f"/usr/local/bin/{provider}",
+        usage=Usage(provider, WindowUsage(utilization, reset, 5 * 3600)),
+    )
+
+
+class TestMainV3(unittest.TestCase):
+    def setUp(self):
+        self.config_path, self.state_path = _config_file()
+
+    @mock.patch("quota_butler.main.push_interactive")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_recovered_window_sends_one_actionable_card(self, detect, push):
+        detect.return_value = {"cc": _connected("cc", 0)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                provider_snapshots={
+                    "cc": {
+                        "utilization": 80,
+                        "reset_at": "2026-06-19T13:30:00+08:00",
                     }
-                ),
-            )
-
-            code = run(config_path, now=now)
-
-            self.assertEqual(code, 0)
-            push_oneup.assert_called_once()
-
-    @mock.patch("quota_butler.main.cancel_plan_tasks")
-    @mock.patch("quota_butler.main.get_provider")
-    def test_expired_plan_cleanup_persists_even_when_sensing_fails(
-        self, get_provider, cancel
-    ):
-        from quota_butler.providers.base import ProviderError
-
-        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
-        get_provider.return_value.read_usage.side_effect = ProviderError("offline")
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: codex\n"
-                    "scheduler_agents: codex\n"
-                    f"state_path: {state_path}\n"
-                )
-            state_mod.save(
-                state_path,
-                state_mod.State(
-                    active_plan={
-                        "plan_id": "old",
-                        "status": "active",
-                        "work_end": (now - timedelta(minutes=1)).isoformat(),
-                        "tasks": [],
-                    }
-                ),
-            )
-
-            code = run(config_path, now=now)
-
-            self.assertEqual(code, 2)
-            self.assertIsNone(state_mod.load(state_path).active_plan)
-
-    @mock.patch("quota_butler.main.push_oneup_card")
-    @mock.patch("quota_butler.main.get_provider")
-    def test_recovered_provider_without_active_plan_pushes_oneup(
-        self, get_provider, push_oneup
-    ):
-        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
-        usage = Usage(
-            provider="codex",
-            five_hour=WindowUsage(0, None, 5 * 3600),
+                }
+            ),
         )
-        get_provider.return_value.read_usage.return_value = usage
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: codex\n"
-                    "scheduler_agents: codex\n"
-                    f"state_path: {state_path}\n"
-                    "feishu:\n"
-                    "  chat_id: oc_test\n"
-                )
-            previous_reset = (now - timedelta(minutes=1)).isoformat()
-            state_mod.save(
-                state_path,
-                state_mod.State(
-                    provider_snapshots={
-                        "codex": {"utilization": 80, "reset_at": previous_reset}
-                    }
-                ),
-            )
 
-            code = run(config_path, now=now)
-
-            self.assertEqual(code, 0)
-            push_oneup.assert_called_once()
-            state = state_mod.load(state_path)
-            self.assertEqual(
-                state.last_oneup_notified_window,
-                f"codex:{previous_reset}",
-            )
-
-    @mock.patch("quota_butler.main.push_oneup_card")
-    @mock.patch("quota_butler.main.get_provider")
-    def test_claude_recovery_does_not_offer_real_warmup(
-        self, get_provider, push_oneup
-    ):
-        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
-        get_provider.return_value.read_usage.return_value = Usage(
-            provider="cc",
-            five_hour=WindowUsage(0, None, 5 * 3600),
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 19, 14, 0, tzinfo=LOCAL),
         )
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: cc\n"
-                    "scheduler_agents: cc\n"
-                    f"state_path: {state_path}\n"
-                )
-            previous_reset = (now - timedelta(minutes=1)).isoformat()
-            state_mod.save(
-                state_path,
-                state_mod.State(
-                    provider_snapshots={
-                        "cc": {"utilization": 80, "reset_at": previous_reset}
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(push.call_count, 1)
+        self.assertIn("立即预热", str(push.call_args.args[0]))
+
+    @mock.patch("quota_butler.main.push_interactive")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_recovery_during_23_to_08_quiet_hours_is_not_sent(self, detect, push):
+        detect.return_value = {"codex": _connected("codex", 0)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                provider_snapshots={
+                    "codex": {
+                        "utilization": 90,
+                        "reset_at": "2026-06-19T01:00:00+08:00",
                     }
-                ),
-            )
-
-            code = run(config_path, now=now)
-
-            self.assertEqual(code, 0)
-            push_oneup.assert_not_called()
-
-    @mock.patch("quota_butler.main.push_oneup_card")
-    @mock.patch("quota_butler.main.get_provider")
-    def test_active_plan_suppresses_main_oneup(self, get_provider, push_oneup):
-        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
-        get_provider.return_value.read_usage.return_value = Usage(
-            provider="codex",
-            five_hour=WindowUsage(0, None, 5 * 3600),
+                }
+            ),
         )
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: codex\n"
-                    "scheduler_agents: codex\n"
-                    f"state_path: {state_path}\n"
-                )
-            state_mod.save(
-                state_path,
-                state_mod.State(
-                    active_plan={"plan_id": "p1", "status": "active"},
-                    provider_snapshots={
-                        "codex": {
-                            "utilization": 80,
-                            "reset_at": (now - timedelta(minutes=1)).isoformat(),
-                        }
-                    },
-                ),
-            )
 
-            code = run(config_path, now=now)
-
-            self.assertEqual(code, 0)
-            push_oneup.assert_not_called()
-
-    @mock.patch("quota_butler.main.cancel_plan_tasks")
-    @mock.patch("quota_butler.main.get_provider")
-    def test_expired_active_plan_is_cleared_before_oneup_decision(
-        self, get_provider, cancel
-    ):
-        now = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
-        get_provider.return_value.read_usage.return_value = Usage(
-            provider="codex",
-            five_hour=WindowUsage(0, None, 5 * 3600),
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 19, 1, 30, tzinfo=LOCAL),
         )
-        with tempfile.TemporaryDirectory() as d:
-            config_path = os.path.join(d, "config.yaml")
-            state_path = os.path.join(d, "state.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "sense_provider: codex\n"
-                    "scheduler_agents: codex\n"
-                    f"state_path: {state_path}\n"
-                )
-            state_mod.save(
-                state_path,
-                state_mod.State(
-                    active_plan={
-                        "plan_id": "old",
-                        "status": "active",
-                        "work_end": (now - timedelta(minutes=1)).isoformat(),
-                        "tasks": [{"label": "old-task", "plist_path": "/tmp/old.plist"}],
+
+        self.assertEqual(rc, 0)
+        push.assert_not_called()
+
+    @mock.patch("quota_butler.main.push_interactive")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_22_oclock_sends_bedtime_card_only_once_per_day(self, detect, push):
+        detect.return_value = {"cc": _connected("cc", 30)}
+        now = datetime(2026, 6, 19, 22, 5, tzinfo=LOCAL)
+
+        self.assertEqual(main.run(self.config_path, now=now), 0)
+        self.assertEqual(main.run(self.config_path, now=now), 0)
+
+        self.assertEqual(push.call_count, 1)
+        self.assertIn("明天有重度使用 AI", str(push.call_args.args[0]))
+
+    @mock.patch("quota_butler.main.push_interactive")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_22_oclock_recovery_is_merged_into_bedtime_card(self, detect, push):
+        detect.return_value = {"cc": _connected("cc", 0)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                provider_snapshots={
+                    "cc": {
+                        "utilization": 90,
+                        "reset_at": "2026-06-19T21:59:00+08:00",
                     }
-                ),
-            )
+                }
+            ),
+        )
 
-            code = run(config_path, now=now)
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 19, 22, 0, tzinfo=LOCAL),
+        )
 
-            self.assertEqual(code, 0)
-            self.assertIsNone(state_mod.load(state_path).active_plan)
-            cancel.assert_called_once()
+        self.assertEqual(rc, 0)
+        self.assertEqual(push.call_count, 1)
+        card = str(push.call_args.args[0])
+        self.assertIn("刚刚恢复", card)
+        self.assertIn("明天有重度使用 AI", card)
+
+    @mock.patch("quota_butler.main.push_interactive")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_old_night_recovery_is_not_replayed_after_eight(self, detect, push):
+        detect.return_value = {"cc": _connected("cc", 0)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                provider_snapshots={
+                    "cc": {
+                        "utilization": 90,
+                        "reset_at": "2026-06-19T01:00:00+08:00",
+                    }
+                }
+            ),
+        )
+
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 19, 9, 0, tzinfo=LOCAL),
+        )
+
+        self.assertEqual(rc, 0)
+        push.assert_not_called()
+
+    @mock.patch("quota_butler.main.push_interactive")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_due_snooze_repeats_the_same_recovery_card(self, detect, push):
+        detect.return_value = {"codex": _connected("codex", 0)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                pending_recovery={
+                    "provider": "codex",
+                    "window_key": "codex:w1",
+                    "due_at": "2026-06-19T13:59:00+08:00",
+                },
+                last_recovery_notified_windows={"codex": "codex:w1"},
+            ),
+        )
+
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 19, 14, 0, tzinfo=LOCAL),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(push.call_count, 1)
+        self.assertIn("30 分钟后提醒", str(push.call_args.args[0]))
+        self.assertIsNone(state_mod.load(self.state_path).pending_recovery)
 
 
 if __name__ == "__main__":

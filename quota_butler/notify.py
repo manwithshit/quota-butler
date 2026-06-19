@@ -1,918 +1,498 @@
-"""飞书消息：提醒卡（带【开/不开】）· 回执 · 状态卡（群聊查询用）。
-
-用 lark-cli 发 CardKit 2.0 卡片 / 文本到目标群 / 私聊，必须以 bot 身份
-（user 身份缺 im:message.send_as_user scope）。
-
-回调机制：私人 bridge fork 的内置 quota 命令。卡片按钮 callback 的 value 带
-{"cmd": "quota", "action": ...}，bridge 完成权限检查后把完整 payload 通过 stdin
-交给 quota_butler.handler。本模块只负责把消息发出去。
-"""
+"""Feishu CardKit cards for Quota Butler V3."""
 
 from __future__ import annotations
 
 import json
 import math
 import subprocess
-from dataclasses import replace
-from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from datetime import date
+from typing import Any, Dict, Mapping, Optional
 
+from .agent_status import AgentState, AgentStatus
 from .config import Config
 from .plan_tasks import plan_record
-from .planner import SchedulePlan
-from .rules import Decision
-from .providers.base import Usage
-from .schedule_flow import (
-    INTENSITY_LABELS,
-    TASK_TYPE_LABELS,
-    SchedulePreferences,
-    flow_payload,
-)
+from .planner import AGENT_LABELS, SchedulePlan
+from .schedule_flow import PlanRequest, flow_payload
 
-PROVIDER_LABEL = {"cc": "Claude Code", "codex": "Codex"}
-MODE_LABEL = {"sustain": "不断粮模式", "balanced": "平衡模式", "savings": "节省模式"}
+PROVIDER_LABEL = AGENT_LABELS
 
 
 class NotifyError(Exception):
     pass
 
 
-# ---- 公共：窗口标签 + lark-cli 发送 --------------------------------------
-
-def window_label(window_seconds: Optional[int]) -> str:
-    """据窗口时长给个人话标签：5h 窗口 / 7天窗口 / 月度额度。"""
-    if not window_seconds:
-        return "窗口"
-    if window_seconds <= 6 * 3600:
-        return f"{round(window_seconds / 3600)}h 窗口"
-    if window_seconds < 28 * 86400:
-        return f"{round(window_seconds / 86400)}天窗口"
-    return "月度额度"
-
-
-def _target_args(config: Config):
-    if config.feishu.chat_id:
-        return ["--chat-id", config.feishu.chat_id]
-    if config.feishu.user_id:
-        return ["--user-id", config.feishu.user_id]
-    return None
-
-
-def _send(msg_type: str, content_json: str, config: Config) -> str:
-    """统一的 lark-cli 发送（bot 身份）。三种消息共用，避免逻辑分叉。"""
-    target_args = _target_args(config)
-    if target_args is None:
-        raise NotifyError("config.feishu 未配置 chat_id / user_id，无处可推")
-    cmd = ["lark-cli", "im", "+messages-send", "--as", "bot",
-           *target_args, "--msg-type", msg_type, "--content", content_json]
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except (subprocess.SubprocessError, OSError) as e:
-        raise NotifyError(f"调用 lark-cli 失败: {e}") from e
-    if out.returncode != 0:
-        raise NotifyError(f"lark-cli 退出码 {out.returncode}: {out.stderr.strip()[:200]}")
-    return out.stdout.strip()
-
-
-def _button(text: str, btn_type: str, value: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "tag": "button",
-        "text": {"tag": "plain_text", "content": text},
-        "type": btn_type,
-        "width": "fill",
-        "behaviors": [{"type": "callback", "value": value}],
-    }
-
-
-def _callback_value(action: str, **fields: Any) -> Dict[str, Any]:
-    return {"cmd": "quota", "action": action, **fields}
-
-
-# ---- 提醒卡（S3）---------------------------------------------------------
-
-def build_card(usage: Usage, decision: Decision) -> Dict[str, Any]:
-    five = usage.five_hour
-    minutes = decision.minutes_to_reset
-    minute_txt = f"{minutes:.0f}" if minutes is not None else "?"
-    reset_local = five.resets_at.astimezone().strftime("%H:%M") if five.resets_at else "无"
-    wl = window_label(five.window_seconds)
-
-    summary = f"额度管家：{wl} {minute_txt} 分钟后重置"
-    body_md = (
-        f"**{wl}即将换挡**\n\n"
-        f"- 已用额度：**{five.utilization:.0f}%**\n"
-        f"- 距重置：**{minute_txt} 分钟**（{reset_local} 重置）\n\n"
-        f"要现在预热下一个窗口吗？"
-    )
-
-    open_value = _callback_value(
-        "warmup",
-        resets_at=five.resets_at.isoformat() if five.resets_at else "",
-    )
-    skip_value = _callback_value(
-        "skip",
-        resets_at=five.resets_at.isoformat() if five.resets_at else "",
-    )
-
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": summary}},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": body_md},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {"tag": "column", "elements": [_button("🔥 开", "primary", open_value)]},
-                        {"tag": "column", "elements": [_button("不开", "default", skip_value)]},
-                    ],
-                },
-            ]
-        },
-    }
-
-
-def push_card(usage: Usage, decision: Decision, config: Config,
-              dry_run: bool = False) -> Optional[str]:
-    """发提醒卡。dry_run 时只打印卡 JSON，不真发。"""
-    card = build_card(usage, decision)
-    if dry_run:
-        print("[dry-run] 将发送卡片：")
-        print(json.dumps(card, ensure_ascii=False, indent=2))
-        return None
-    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
-
-
-# ---- 回执（S4）-----------------------------------------------------------
-
-def push_receipt(text: str, config: Config, dry_run: bool = False) -> Optional[str]:
-    """点「开」预热后往群里回一条纯文本结果（✅ 已开窗 / ❌ 失败）。"""
-    if dry_run:
-        print(f"[dry-run] 回执：{text}")
-        return None
-    content = json.dumps({"text": text}, ensure_ascii=False)
-    return _send("text", content, config)
-
-
-# ---- 状态卡（群聊主动查询）----------------------------------------------
-
-StatusResult = Tuple[str, Optional[Usage], Optional[str]]  # (provider, usage, error)
-
-
 def usage_bar(percent: float, width: int = 10) -> str:
-    """Render a stable text progress bar for Feishu markdown cards."""
     if width <= 0:
         return ""
     value = max(0.0, min(float(percent), 100.0))
-    filled = min(width, int(math.floor((value * width / 100.0) + 0.5)))
-    return ("█" * filled) + ("░" * (width - filled))
+    filled = min(width, int(math.floor(value * width / 100 + 0.5)))
+    return "█" * filled + "░" * (width - filled)
 
 
 def usage_status(percent: float) -> str:
     value = max(0.0, min(float(percent), 100.0))
     if value < 30:
-        return "余量充足"
+        return "🟢 余量充足"
     if value < 70:
-        return "正常使用"
+        return "🟡 正常使用"
     if value < 90:
-        return "注意消耗"
-    return "接近耗尽"
+        return "🟠 注意消耗"
+    return "🔴 接近耗尽"
 
 
-def _usage_error_advice(provider: str, error: str) -> str:
-    detail = (error or "读取失败").strip()
-    lowered = detail.lower()
-    if provider == "cc" and any(key in lowered for key in ("token", "401", "过期", "expired")):
-        return "运行一次 `claude` CLI 刷新登录"
-    if provider == "codex" and any(key in lowered for key in ("token", "401", "auth")):
-        return "运行一次 `codex` CLI 刷新登录"
-    return "检查本机登录状态和网络后重试"
-
-
-def build_status_card(results: Sequence[StatusResult]) -> Dict[str, Any]:
-    """Build a compact visual work panel for all configured providers."""
-    lines: List[str] = ["**额度状态**", ""]
-    for name, usage, err in results:
-        label = PROVIDER_LABEL.get(name, name)
-        if usage is None:
-            lines.extend([
-                f"**{label}**",
-                "░░░░░░░░░░ **?**",
-                f"状态：**读取失败** · {err or '未知错误'}",
-                f"建议：{_usage_error_advice(name, err or '')}",
-                "",
-            ])
+def build_status_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
+    lines = ["**当前额度**", ""]
+    for provider in ("cc", "codex"):
+        status = statuses.get(provider)
+        if status is None:
             continue
-        five = usage.five_hour
-        reset_local = five.resets_at.astimezone().strftime("%m-%d %H:%M") if five.resets_at else "无"
-        lines.extend([
-            f"**{label}** · {window_label(five.window_seconds)}",
-            f"{usage_bar(five.utilization)} **{five.utilization:.0f}%**",
-            f"状态：**{usage_status(five.utilization)}**",
-            f"恢复：**{reset_local}**",
-        ])
-        if usage.seven_day:
-            sd = usage.seven_day
-            lines.append(
-                f"{window_label(sd.window_seconds)}："
-                f"{usage_bar(sd.utilization)} **{sd.utilization:.0f}%**"
+        label = PROVIDER_LABEL[provider]
+        if status.state == AgentState.CONNECTED and status.usage:
+            five = status.usage.five_hour
+            reset = (
+                five.resets_at.astimezone().strftime("%m-%d %H:%M")
+                if five.resets_at
+                else "暂无"
             )
-        lines.append("")
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": "额度管家：当前状态"}},
-        "body": {"elements": [{"tag": "markdown", "content": "\n".join(lines)}]},
-    }
-
-
-def push_status_card(results: Sequence[StatusResult], config: Config,
-                     dry_run: bool = False) -> Optional[str]:
-    card = build_status_card(results)
-    if dry_run:
-        print("[dry-run] 将发送状态卡：")
-        print(json.dumps(card, ensure_ascii=False, indent=2))
-        return None
-    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
-
-
-def build_oneup_card(
-    provider: str,
-    other_results: Sequence[StatusResult] = (),
-    *,
-    window_key: str = "",
-) -> Dict[str, Any]:
-    label = PROVIDER_LABEL.get(provider, provider)
-    lines = [
-        f"**{label} 已恢复，可以 one up 了**",
-        "",
-        f"当前可用：**{label}**",
-        "建议：现在启动，保持连续工作。",
-    ]
-    for name, usage, err in other_results:
-        other_label = PROVIDER_LABEL.get(name, name)
-        if usage is None:
-            lines.append(f"{other_label}：{err or '读取失败'}")
+            lines.extend(
+                [
+                    f"**{label} · 5 小时窗口**",
+                    f"{usage_bar(five.utilization)} **{five.utilization:.0f}%**",
+                    f"{usage_status(five.utilization)} · 恢复：**{reset}**",
+                ]
+            )
+            if status.usage.seven_day:
+                seven = status.usage.seven_day
+                lines.append(
+                    f"7 天额度：{usage_bar(seven.utilization)} "
+                    f"**{seven.utilization:.0f}%**"
+                )
+        elif status.state == AgentState.NEEDS_LOGIN:
+            instruction = (
+                "`claude auth login`"
+                if provider == "cc"
+                else "`codex login`"
+            )
+            lines.extend(
+                [
+                    f"**{label}**",
+                    "🟡 **需要重新登录**",
+                    f"请在本机运行 {instruction}",
+                ]
+            )
+        elif status.state == AgentState.UNAVAILABLE:
+            lines.extend(
+                [
+                    f"**{label}**",
+                    "🟠 **暂时无法读取**",
+                    "已检测到安装，稍后可重新查询。",
+                ]
+            )
         else:
-            lines.append(
-                f"{other_label}：已用 {usage.five_hour.utilization:.0f}% · "
-                f"{usage_status(usage.five_hour.utilization)}"
-            )
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": f"{label} 已恢复，可以 one up"}},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": "\n".join(lines)},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {
-                            "tag": "column",
-                            "elements": [
-                                _button(
-                                    "现在启动",
-                                    "primary",
-                                    _callback_value(
-                                        "oneup_start",
-                                        provider=provider,
-                                        window_key=window_key,
-                                    ),
-                                )
-                            ],
-                        },
-                        {
-                            "tag": "column",
-                            "elements": [
-                                _button(
-                                    "稍后提醒",
-                                    "default",
-                                    _callback_value(
-                                        "oneup_snooze",
-                                        minutes=30,
-                                        provider=provider,
-                                        window_key=window_key,
-                                    ),
-                                )
-                            ],
-                        },
-                        {
-                            "tag": "column",
-                            "elements": [
-                                _button(
-                                    "今天不提醒",
-                                    "default",
-                                    _callback_value(
-                                        "oneup_mute_today",
-                                        provider=provider,
-                                        window_key=window_key,
-                                    ),
-                                )
-                            ],
-                        },
-                    ],
-                },
-            ]
-        },
-    }
+            lines.extend([f"**{label}**", "⚪ **未检测到安装**"])
+        lines.append("")
+    return _card("额度管家：当前额度", lines)
 
 
-def push_oneup_card(
-    provider: str,
-    other_results: Sequence[StatusResult],
-    config: Config,
-    dry_run: bool = False,
-    *,
-    window_key: str = "",
-) -> Optional[str]:
-    card = build_oneup_card(provider, other_results, window_key=window_key)
-    if dry_run:
-        print("[dry-run] 将发送 one-up 卡：")
-        print(json.dumps(card, ensure_ascii=False, indent=2))
-        return None
-    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
-
-
-# ---- V2 调度计划卡 ------------------------------------------------------
-
-def build_schedule_scenario_card(
-    target_date: date,
-    preferences: SchedulePreferences,
-    *,
-    return_step: str,
-    error: str = "",
-) -> Dict[str, Any]:
-    intro = [
-        "**先认识一下你的日常使用场景**",
-        "",
-        "例如：独立开发产品、写小红书内容、调研 AI 工具。以后可以随时修改。",
-    ]
-    if error:
-        intro.extend(["", f"⚠️ {error}"])
-    field: Dict[str, Any] = {
-        "tag": "input",
-        "element_id": "daily_scenario_input",
-        "name": "daily_scenario",
-        "required": True,
-        "width": "fill",
-        "placeholder": {
-            "tag": "plain_text",
-            "content": "请输入你的日常 AI 使用场景",
-        },
-    }
-    if preferences.daily_scenario:
-        field["default_value"] = preferences.daily_scenario
-    submit_value = flow_payload(
-        step="scenario_saved",
-        target_date=target_date,
-        preferences=preferences,
-        return_step=return_step,
-    )
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": "Quota Butler：配置日常使用场景"}},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": "\n".join(intro)},
-                {
-                    "tag": "form",
-                    "name": "schedule_scenario_form",
-                    "direction": "vertical",
-                    "elements": [
-                        field,
-                        {
-                            "tag": "button",
-                            "name": "submit_schedule_scenario",
-                            "text": {"tag": "plain_text", "content": "保存并继续"},
-                            "type": "primary",
-                            "form_action_type": "submit",
-                            "behaviors": [{"type": "callback", "value": submit_value}],
-                        },
-                    ],
-                },
-            ]
-        },
-    }
-
-
-def build_schedule_task_card(
-    target_date: date,
-    preferences: SchedulePreferences = SchedulePreferences(),
-) -> Dict[str, Any]:
-    choices = [
-        ("编码开发", "coding"),
-        ("内容创作", "content"),
-        ("调研分析", "research"),
-        ("混合任务", "mixed"),
-    ]
-    buttons = [
-        _button(
-            label,
-            "primary" if value == preferences.task_type else "default",
-            flow_payload(
-                step="intensity",
-                target_date=target_date,
-                preferences=replace(preferences, task_type=value),
+def build_recovery_card(provider: str, window_key: str) -> Dict[str, Any]:
+    label = PROVIDER_LABEL.get(provider, provider)
+    return _card(
+        f"{label} 已恢复",
+        [f"⚡ **{label} 已恢复。接下来准备重点使用吗？**"],
+        [
+            _button(
+                "立即预热",
+                "primary",
+                _callback("warmup_now", provider=provider, window_key=window_key),
             ),
-        )
-        for label, value in choices
-    ]
-    return _guided_choice_card(
-        "明天主要做什么？",
-        "先选择主要任务类型，计划会据此解释每次接力的目的。",
-        buttons,
-    )
-
-
-def build_schedule_intensity_card(
-    target_date: date,
-    preferences: SchedulePreferences,
-) -> Dict[str, Any]:
-    choices = [
-        ("轻量", "light"),
-        ("正常", "normal"),
-        ("高强度", "high"),
-    ]
-    buttons = [
-        _button(
-            label,
-            "primary" if value == preferences.intensity else "default",
-            flow_payload(
-                step="time",
-                target_date=target_date,
-                preferences=replace(preferences, intensity=value),
+            _button(
+                "30 分钟后提醒",
+                "default",
+                _callback(
+                    "recovery_snooze",
+                    provider=provider,
+                    window_key=window_key,
+                    minutes=30,
+                ),
             ),
-        )
-        for label, value in choices
-    ]
-    return _guided_choice_card(
-        "希望保持什么工作强度？",
-        "强度会影响接力频率；轻量模式会尽量减少打断。",
-        buttons,
-    )
-
-
-def build_schedule_time_card(
-    target_date: date,
-    preferences: SchedulePreferences,
-    *,
-    error: str = "",
-) -> Dict[str, Any]:
-    intro = [
-        "**选择工作时间**",
-        "",
-        "时区：**北京时间（Asia/Shanghai）**",
-    ]
-    if error:
-        intro.extend(["", f"⚠️ {error}"])
-    submit_value = flow_payload(
-        step="summary",
-        target_date=target_date,
-        preferences=preferences,
-    )
-    form = {
-        "tag": "form",
-        "name": "schedule_time_form",
-        "direction": "vertical",
-        "elements": [
-            {"tag": "markdown", "content": "**开始时间**"},
-            {
-                "tag": "picker_time",
-                "element_id": "work_start_picker",
-                "name": "work_start",
-                "required": True,
-                "initial_time": preferences.work_start,
-                "width": "fill",
-            },
-            {"tag": "markdown", "content": "**结束时间**"},
-            {
-                "tag": "picker_time",
-                "element_id": "work_end_picker",
-                "name": "work_end",
-                "required": True,
-                "initial_time": preferences.work_end,
-                "width": "fill",
-            },
-            {
-                "tag": "button",
-                "name": "submit_schedule_time",
-                "text": {"tag": "plain_text", "content": "确认时间"},
-                "type": "primary",
-                "form_action_type": "submit",
-                "behaviors": [{"type": "callback", "value": submit_value}],
-            },
+            _button(
+                "暂时不用",
+                "default",
+                _callback("recovery_skip", provider=provider, window_key=window_key),
+            ),
         ],
-    }
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": "Quota Butler：选择工作时间"}},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": "\n".join(intro)},
-                form,
-            ]
-        },
-    }
-
-
-def build_schedule_summary_card(
-    target_date: date,
-    preferences: SchedulePreferences,
-) -> Dict[str, Any]:
-    scenario_line = (
-        f"- 日常场景：**{_markdown_inline(preferences.daily_scenario)}**"
-        if preferences.daily_scenario else
-        "- 日常场景：**尚未设置**"
     )
-    markdown = "\n".join([
-        "**确认明天的安排偏好**",
-        "",
-        scenario_line,
-        f"- 主要任务：**{TASK_TYPE_LABELS[preferences.task_type]}**",
-        f"- 工作强度：**{INTENSITY_LABELS[preferences.intensity]}**",
-        f"- 工作时间：**{preferences.work_start}–{preferences.work_end}**",
-        "- 时区：**北京时间（Asia/Shanghai）**",
-    ])
-    actions = [
-        ("生成计划", "primary", "generate"),
-        ("修改任务", "default", "task"),
-        ("修改强度", "default", "intensity"),
-        ("修改时间", "default", "time"),
-        ("修改场景", "default", "scenario"),
-    ]
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": "Quota Butler：确认规划偏好"}},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": markdown},
-                *_button_grid([
-                    _button(
-                        label,
-                        button_type,
-                        flow_payload(
-                            step=step,
-                            target_date=target_date,
-                            preferences=preferences,
-                        ),
-                    )
-                    for label, button_type, step in actions
-                ]),
-            ]
-        },
-    }
 
 
-def push_guided_schedule_card(
-    card: Dict[str, Any],
-    config: Config,
-    dry_run: bool = False,
-) -> Optional[str]:
-    if dry_run:
-        print("[dry-run] 将发送规划引导卡：")
-        print(json.dumps(card, ensure_ascii=False, indent=2))
-        return None
-    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
-
-
-def _guided_choice_card(
-    title: str,
-    description: str,
-    buttons: Sequence[Dict[str, Any]],
+def build_bedtime_card(
+    statuses: Optional[Mapping[str, AgentStatus]] = None,
+    recovered_provider: str = "",
 ) -> Dict[str, Any]:
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": f"Quota Butler：{title}"}},
-        "body": {
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"**{title}**\n\n{description}",
-                },
-                *_button_grid(buttons),
-            ]
-        },
-    }
+    lines = []
+    if recovered_provider:
+        lines.append(f"⚡ {PROVIDER_LABEL[recovered_provider]} 刚刚恢复。")
+        lines.append("")
+    if statuses:
+        connected = [
+            PROVIDER_LABEL[name]
+            for name, status in statuses.items()
+            if status.schedulable
+        ]
+        if connected:
+            lines.append(f"当前可用：**{' + '.join(connected)}**")
+            lines.append("")
+    lines.append("🌙 **明天有重度使用 AI 的计划吗？**")
+    target = date.today().fromordinal(date.today().toordinal() + 1)
+    return _card(
+        "额度管家：明日计划",
+        lines,
+        [
+            _button(
+                "明天要重度使用",
+                "primary",
+                _callback(
+                    "schedule_intent",
+                    intent="tomorrow",
+                    target_date=target.isoformat(),
+                ),
+            ),
+            _button("明天不用", "default", _callback("tomorrow_skip")),
+        ],
+    )
 
 
-def _button_grid(
-    buttons: Sequence[Dict[str, Any]],
+def build_time_mode_card(target_date: date) -> Dict[str, Any]:
+    base = PlanRequest(target_date=target_date)
+    return _card(
+        "选择重度使用时间",
+        [
+            f"**{target_date.strftime('%m 月 %d 日')} 的重度使用时间**",
+            "",
+            "只需要告诉我开始时间，或一个明确区间。",
+        ],
+        [
+            _button(
+                "从某时开始",
+                "primary",
+                flow_payload("edit_time_point", base),
+            ),
+            _button(
+                "指定时间区间",
+                "default",
+                flow_payload(
+                    "edit_time_range",
+                    PlanRequest(target_date, "range", "09:00", "17:00", "auto"),
+                ),
+            ),
+        ],
+    )
+
+
+def build_time_card(
+    request: PlanRequest,
     *,
-    columns: int = 2,
-) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for start in range(0, len(buttons), columns):
-        rows.append({
-            "tag": "column_set",
-            "columns": [
+    error: str = "",
+) -> Dict[str, Any]:
+    fields = [
+        {
+            "tag": "picker_time",
+            "name": "work_start",
+            "placeholder": {"tag": "plain_text", "content": "选择开始时间"},
+            "initial_time": request.work_start,
+            "required": True,
+        }
+    ]
+    if request.time_mode == "range":
+        fields.append(
+            {
+                "tag": "picker_time",
+                "name": "work_end",
+                "placeholder": {"tag": "plain_text", "content": "选择结束时间"},
+                "initial_time": request.work_end,
+                "required": True,
+            }
+        )
+    fields.append(
+        {
+            "tag": "button",
+            "name": "submit_plan_time",
+            "text": {"tag": "plain_text", "content": "生成计划"},
+            "type": "primary",
+            "width": "fill",
+            "form_action_type": "submit",
+            "behaviors": [
                 {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [button],
+                    "type": "callback",
+                    "value": flow_payload("generate_plan", request),
                 }
-                for button in buttons[start:start + columns]
             ],
-        })
-    return rows
-
-
-def build_schedule_card(
-    plan: SchedulePlan,
-    *,
-    warnings: Sequence[str] = (),
-) -> Dict[str, Any]:
-    del warnings
-    preferences = plan.preferences or SchedulePreferences(
-        task_type="mixed",
-        intensity={
-            "savings": "light",
-            "balanced": "normal",
-            "sustain": "high",
-        }.get(plan.mode, "normal"),
-        work_start=_fmt_time(plan.work_start),
-        work_end=_fmt_time(plan.work_end),
+        }
     )
-    agent_labels = " + ".join(
-        PROVIDER_LABEL.get(agent, agent) for agent in plan.agents
-    )
-    lines: List[str] = [
-        "**明日 AI 工作计划**",
-        "",
-        (
-            f"{preferences.work_start}–{preferences.work_end}，"
-            f"共安排 **{plan.relay_count} 次接力**。"
-        ),
-        f"- 本次使用：**{agent_labels}**",
-        (
-            f"- 日常场景：**{_markdown_inline(preferences.daily_scenario)}**"
-            if preferences.daily_scenario else
-            "- 日常场景：**未设置**"
-        ),
-        f"- 主要任务：**{TASK_TYPE_LABELS[preferences.task_type]}**",
-        f"- 工作强度：**{INTENSITY_LABELS[preferences.intensity]}**",
-        "",
-        "**计算依据**",
-        f"- 计划覆盖率：**{plan.cas * 100:.0f}%**",
-        f"- 预计空档：**{plan.waiting_minutes:.0f} 分钟**",
-        f"- 预计接力：**{plan.relay_count} 次**",
-        "- 按当前额度窗口估算，实际恢复时间可能变化。",
-        "",
-        "**为什么这样安排**",
-    ]
-    lines.extend(_guided_timeline(plan, preferences))
-
-    adopt_value = _callback_value("adopt_schedule", plan=plan_record(plan))
-    adjust_value = flow_payload(
-        step="summary",
-        target_date=plan.work_start.date(),
-        preferences=preferences,
-    )
-    remind_value = _callback_value("schedule_remind_only")
-
+    lines = ["**选择重度使用时间**"]
+    if error:
+        lines.extend(["", f"❌ {error}"])
     return {
         "schema": "2.0",
-        "config": {"summary": {"content": "Quota Butler：AI Agent 调度计划"}},
+        "config": {"summary": {"content": "额度管家：设置使用时间"}},
         "body": {
             "elements": [
                 {"tag": "markdown", "content": "\n".join(lines)},
-                *_button_grid([
-                    _button("采用计划", "primary", adopt_value),
-                    _button("调整设置", "default", adjust_value),
-                    _button("仅提醒", "default", remind_value),
-                ]),
+                {"tag": "form", "name": "v3_plan_time", "elements": fields},
             ]
         },
     }
 
 
-def _guided_timeline(
-    plan: SchedulePlan,
-    preferences: SchedulePreferences,
-) -> List[str]:
-    lines = [
-        (
-            f"- {preferences.work_start} · 开始"
-            f"{TASK_TYPE_LABELS[preferences.task_type]}，先完成最需要连续注意力的部分"
+def build_agent_control_card(
+    request: PlanRequest,
+    statuses: Mapping[str, AgentStatus],
+) -> Dict[str, Any]:
+    available = [
+        provider for provider in ("cc", "codex")
+        if statuses.get(provider) and statuses[provider].schedulable
+    ]
+    if len(available) <= 1:
+        label = PROVIDER_LABEL[available[0]] if available else "可用 Agent"
+        return _card(
+            "调整 Agent",
+            [f"当前仅检测到 {label}。", "", "重新检测后会按最新状态生成计划。"],
+            [
+                _button(
+                    "重新检测",
+                    "primary",
+                    _callback(
+                        "redetect_agents",
+                        request=_request_dict(request),
+                    ),
+                )
+            ],
         )
+    buttons = []
+    for label, strategy in (
+        ("自动安排", "auto"),
+        ("只用 Claude Code", "cc"),
+        ("只用 Codex", "codex"),
+        ("Claude Code + Codex", "both"),
+    ):
+        candidate = PlanRequest(
+            request.target_date,
+            request.time_mode,
+            request.work_start,
+            request.work_end,
+            strategy,
+        )
+        buttons.append(
+            _button(
+                label,
+                "primary" if strategy == request.agent_strategy else "default",
+                {
+                    **flow_payload("generate_plan", candidate),
+                    "agent_strategy": strategy,
+                },
+            )
+        )
+    return _card(
+        "调整 Agent",
+        ["**选择这次计划使用的 Agent**", "", "自动安排会优先保持同一个 Agent。"],
+        buttons,
+    )
+
+
+def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
+    labels = " + ".join(PROVIDER_LABEL[agent] for agent in plan.agents)
+    lines = [
+        f"**明天 {plan.work_start:%H:%M}–{plan.work_end:%H:%M}，"
+        f"优先使用 {labels}。**",
+        "",
     ]
     for event in plan.events:
-        if event.kind == "warmup":
-            label = PROVIDER_LABEL.get(event.agent, event.agent)
-            if event.agent == "codex":
-                lines.append(
-                    f"- {_fmt_time(event.at)} · **{label}** 提前预热，减少开工等待"
-                )
-            else:
-                lines.append(
-                    f"- {_fmt_time(event.at)} · **{label}** 预计可用，作为接力候选"
-                )
-        elif event.kind == "recovery" and plan.work_start <= event.at <= plan.work_end:
-            label = PROVIDER_LABEL.get(event.agent, event.agent)
-            lines.append(
-                f"- {_fmt_time(event.at)} · **{label}** 预计恢复，可承接下一段工作"
-            )
-    for relay in plan.relay_points:
-        lines.append(f"- {_fmt_time(relay.at)} · {relay.note}")
-    if not plan.relay_points:
-        lines.append("- 中途不安排固定接力点，尽量减少打断")
-    lines.sort(key=_timeline_sort_key)
-    return lines
-
-
-def _timeline_sort_key(line: str) -> str:
-    marker = line.removeprefix("- ") if hasattr(str, "removeprefix") else line[2:]
-    return marker[:5]
-
-
-def _markdown_inline(value: str) -> str:
-    text = str(value).replace("\\", "\\\\")
-    for char in ("*", "_", "~", "`", "[", "]", "(", ")"):
-        text = text.replace(char, f"\\{char}")
-    return text
-
-
-def push_schedule_card(
-    plan: SchedulePlan,
-    config: Config,
-    dry_run: bool = False,
-    *,
-    warnings: Sequence[str] = (),
-) -> Optional[str]:
-    card = build_schedule_card(plan, warnings=warnings)
-    if dry_run:
-        print("[dry-run] 将发送调度计划卡：")
-        print(json.dumps(card, ensure_ascii=False, indent=2))
-        return None
-    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
-
-
-def build_active_plan_card(record: Dict[str, Any]) -> Dict[str, Any]:
-    start = _parse_iso_time(record.get("work_start"))
-    end = _parse_iso_time(record.get("work_end"))
-    lines = [
-        "**当前生效计划**",
-        "",
-        f"- 模式：**{MODE_LABEL.get(str(record.get('mode')), record.get('mode', '未知'))}**",
-        f"- 工作时间：**{start} - {end}**",
-        f"- Plan ID：`{record.get('plan_id', '')}`",
-        "",
-        "**预热任务**",
-    ]
-    tasks = record.get("tasks") or []
-    if not tasks:
-        lines.append("- 没有待执行任务")
-    for task in tasks:
-        provider = PROVIDER_LABEL.get(str(task.get("provider")), str(task.get("provider")))
-        status = "已执行" if task.get("status") == "executed" else "待执行"
         lines.append(
-            f"- {_parse_iso_time(task.get('scheduled_for'))} · **{provider}** · {status}"
+            f"**{event.at:%H:%M}** · {PROVIDER_LABEL[event.agent]} · {event.purpose}"
         )
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": "Quota Butler：当前生效计划"}},
-        "body": {
-            "elements": [
-                {"tag": "markdown", "content": "\n".join(lines)},
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {
-                            "tag": "column",
-                            "elements": [
-                                _button(
-                                    "取消计划",
-                                    "danger",
-                                    _callback_value("cancel_schedule"),
-                                )
-                            ],
-                        }
-                    ],
-                },
-            ]
-        },
-    }
+    lines.extend(
+        [
+            "",
+            f"预计连续覆盖：**{plan.work_start:%H:%M}–{plan.work_end:%H:%M}**",
+            f"安排原因：{plan.reason}",
+        ]
+    )
+    if "cc" in plan.agents:
+        lines.extend(["", "说明：Claude Code 预热会产生一次真实请求。"])
+    record = plan_record(plan)
+    request = _request_dict(plan.request)
+    return _card(
+        "额度管家：明日计划预览",
+        lines,
+        [
+            _button("采用计划", "primary", _callback("adopt_schedule", plan=record)),
+            _button(
+                "调整 Agent",
+                "default",
+                _callback("adjust_schedule_agents", request=request),
+            ),
+            _button(
+                "调整时间",
+                "default",
+                _callback("adjust_schedule_time", request=request),
+            ),
+            _button("仅提醒", "default", _callback("schedule_remind_only")),
+        ],
+    )
 
 
-def push_active_plan_card(record: Dict[str, Any], config: Config,
-                          dry_run: bool = False) -> Optional[str]:
-    card = build_active_plan_card(record)
-    if dry_run:
-        print("[dry-run] 将发送生效计划卡：")
-        print(json.dumps(card, ensure_ascii=False, indent=2))
-        return None
-    return _send("interactive", json.dumps(card, ensure_ascii=False), config)
+def build_active_plan_card(record: Mapping[str, Any]) -> Dict[str, Any]:
+    start = _hhmm(record.get("work_start"))
+    end = _hhmm(record.get("work_end"))
+    labels = " + ".join(
+        PROVIDER_LABEL.get(agent, str(agent))
+        for agent in record.get("agents") or []
+    )
+    lines = [f"**当前计划 · {start}–{end}**", f"Agent：**{labels or '未记录'}**", ""]
+    tasks = record.get("tasks") or []
+    if tasks:
+        for task in tasks:
+            lines.append(
+                f"⏳ **{_hhmm(task.get('scheduled_for'))}** · "
+                f"{PROVIDER_LABEL.get(task.get('provider'), task.get('provider'))}"
+            )
+    else:
+        for event in record.get("events") or []:
+            lines.append(
+                f"⏳ **{_hhmm(event.get('at'))}** · "
+                f"{PROVIDER_LABEL.get(event.get('agent'), event.get('agent'))}"
+            )
+    return _card(
+        "额度管家：当前计划",
+        lines,
+        [_button("取消计划", "danger", _callback("cancel_schedule"))],
+    )
 
 
 def build_command_menu_card() -> Dict[str, Any]:
-    def action_button(text: str, action: str, value: Dict[str, Any], btn_type: str = "default"):
-        payload = _callback_value(action, **value)
-        return _button(text, btn_type, payload)
-
-    return {
-        "schema": "2.0",
-        "config": {"summary": {"content": "Quota Butler：测试菜单"}},
-        "body": {
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": (
-                        "**Quota Butler 测试菜单**\n\n"
-                        "选择一个动作。采用计划后会创建本地 launchd 预热任务。"
-                    ),
-                },
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {
-                            "tag": "column",
-                            "elements": [
-                                action_button(
-                                    "帮我安排明天",
-                                    "schedule_intent",
-                                    {"intent": "帮我安排明天"},
-                                    "primary",
-                                )
-                            ],
-                        },
-                        {
-                            "tag": "column",
-                            "elements": [
-                                action_button("今天冲刺", "schedule_intent", {"intent": "今天冲刺"})
-                            ],
-                        },
-                    ],
-                },
-                {
-                    "tag": "column_set",
-                    "columns": [
-                        {
-                            "tag": "column",
-                            "elements": [
-                                action_button("不断粮模式", "schedule_intent", {"intent": "不断粮模式"})
-                            ],
-                        },
-                        {
-                            "tag": "column",
-                            "elements": [
-                                action_button("当前额度", "query_status", {})
-                            ],
-                        },
-                        {
-                            "tag": "column",
-                            "elements": [
-                                action_button("查看计划", "view_schedule", {})
-                            ],
-                        },
-                    ],
-                },
-            ]
-        },
-    }
+    return _card(
+        "额度管家",
+        ["**想做什么？**"],
+        [
+            _button("当前额度", "primary", _callback("query_status")),
+            _button("明日计划", "default", _callback("schedule_intent", intent="tomorrow")),
+            _button("查看当前计划", "default", _callback("view_schedule")),
+        ],
+    )
 
 
-def push_command_menu_card(config: Config, dry_run: bool = False) -> Optional[str]:
-    card = build_command_menu_card()
+def push_status_card(statuses, config: Config, dry_run: bool = False):
+    return push_interactive(build_status_card(statuses), config, dry_run)
+
+
+def push_schedule_card(plan: SchedulePlan, config: Config, dry_run: bool = False):
+    return push_interactive(build_schedule_card(plan), config, dry_run)
+
+
+def push_active_plan_card(record, config: Config, dry_run: bool = False):
+    return push_interactive(build_active_plan_card(record), config, dry_run)
+
+
+def push_command_menu_card(config: Config, dry_run: bool = False):
+    return push_interactive(build_command_menu_card(), config, dry_run)
+
+
+def push_interactive(card, config: Config, dry_run: bool = False):
     if dry_run:
-        print("[dry-run] 将发送测试菜单卡：")
         print(json.dumps(card, ensure_ascii=False, indent=2))
         return None
     return _send("interactive", json.dumps(card, ensure_ascii=False), config)
 
 
-def _fmt_time(value) -> str:
-    return value.astimezone().strftime("%H:%M") if getattr(value, "tzinfo", None) else value.strftime("%H:%M")
+def push_receipt(text: str, config: Config, dry_run: bool = False):
+    if dry_run:
+        print(f"[dry-run] {text}")
+        return None
+    return _send("text", json.dumps({"text": text}, ensure_ascii=False), config)
 
 
-def _parse_iso_time(value: object) -> str:
+def _card(summary: str, lines, buttons=None):
+    elements = [{"tag": "markdown", "content": "\n".join(lines)}]
+    if buttons:
+        for offset in range(0, len(buttons), 2):
+            elements.append(
+                {
+                    "tag": "column_set",
+                    "columns": [
+                        {"tag": "column", "elements": [button]}
+                        for button in buttons[offset:offset + 2]
+                    ],
+                }
+            )
+    return {
+        "schema": "2.0",
+        "config": {"summary": {"content": summary}},
+        "body": {"elements": elements},
+    }
+
+
+def _button(text: str, button_type: str, value: Dict[str, Any]):
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": text},
+        "type": button_type,
+        "width": "fill",
+        "behaviors": [{"type": "callback", "value": value}],
+    }
+
+
+def _callback(action: str, **fields):
+    return {"cmd": "quota", "action": action, **fields}
+
+
+def _request_dict(request: PlanRequest):
+    return {
+        "target_date": request.target_date.isoformat(),
+        "time_mode": request.time_mode,
+        "work_start": request.work_start,
+        "work_end": request.work_end,
+        "agent_strategy": request.agent_strategy,
+    }
+
+
+def _hhmm(value: Any) -> str:
+    text = str(value or "")
     try:
-        return datetime.fromisoformat(str(value)).astimezone().strftime("%m-%d %H:%M")
-    except (TypeError, ValueError):
-        return "未知"
+        return text[11:16] if "T" in text else text[:5]
+    except (TypeError, IndexError):
+        return "?"
 
 
-def _collaboration_timeline(plan: SchedulePlan) -> List[str]:
-    lines: List[str] = []
-    warmups = [event for event in plan.events if event.kind == "warmup"]
-    recoveries = [
-        event for event in plan.events
-        if event.kind == "recovery" and plan.work_start <= event.at <= plan.work_end
+def _send(msg_type: str, content_json: str, config: Config) -> str:
+    target = []
+    if config.feishu.chat_id:
+        target = ["--chat-id", config.feishu.chat_id]
+    elif config.feishu.user_id:
+        target = ["--user-id", config.feishu.user_id]
+    else:
+        raise NotifyError("config.feishu 未配置 chat_id / user_id")
+    command = [
+        "lark-cli",
+        "im",
+        "+messages-send",
+        "--as",
+        "bot",
+        *target,
+        "--msg-type",
+        msg_type,
+        "--content",
+        content_json,
     ]
-
-    for event in warmups:
-        label = PROVIDER_LABEL.get(event.agent, event.agent)
-        lines.append(f"- {_fmt_time(event.at)} · **{label}** 预热")
-
-    lines.append(f"- {_fmt_time(plan.work_start)} · **你开始创作**")
-    cursor = plan.work_start
-    for index, event in enumerate(recoveries):
-        if event.at > cursor:
-            role = "你主导：需求整理 / 编码 / 验证" if index == 0 else "Agent 接力：重构 / 测试 / 文档"
-            lines.append(f"- {_fmt_time(cursor)}-{_fmt_time(event.at)} · {role}")
-        label = PROVIDER_LABEL.get(event.agent, event.agent)
-        lines.append(f"- {_fmt_time(event.at)} · **{label}** 恢复，可接力")
-        cursor = event.at
-
-    if cursor < plan.work_end:
-        role = "深度创作：自由发挥 / 联调 / 收尾" if recoveries else "你主导：深度创作 / 验证"
-        lines.append(f"- {_fmt_time(cursor)}-{_fmt_time(plan.work_end)} · {role}")
-    return lines
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise NotifyError(f"调用 lark-cli 失败: {exc}") from exc
+    if result.returncode != 0:
+        raise NotifyError(
+            f"lark-cli 退出码 {result.returncode}: {result.stderr.strip()[:200]}"
+        )
+    return result.stdout.strip()

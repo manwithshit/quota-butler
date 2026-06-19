@@ -14,26 +14,27 @@ from __future__ import annotations
 
 import json
 import os
+import fcntl
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 
 @dataclass
 class State:
+    schema_version: int = 3
     last_run_at: Optional[str] = None
-    last_utilization: Optional[float] = None
-    last_reset_at: Optional[str] = None
-    last_notified_reset_at: Optional[str] = None
-    last_warmed_reset_at: Optional[str] = None
     last_action: Optional[str] = None
     last_chat_message_id: Optional[str] = None
     active_plan: Optional[Dict[str, Any]] = None
     provider_snapshots: Optional[Dict[str, Dict[str, Any]]] = None
-    last_oneup_notified_window: Optional[str] = None
     muted_until: Optional[str] = None
-    pending_oneup: Optional[Dict[str, Any]] = None
-    last_oneup_started_window: Optional[str] = None
-    schedule_profiles: Optional[Dict[str, Dict[str, Any]]] = None
+    agent_statuses: Optional[Dict[str, Dict[str, Any]]] = None
+    last_warmed_windows: Optional[Dict[str, str]] = None
+    last_bedtime_prompt_date: Optional[str] = None
+    proposed_plan_id: Optional[str] = None
+    last_recovery_notified_windows: Optional[Dict[str, str]] = None
+    pending_recovery: Optional[Dict[str, str]] = None
 
 
 def load(path: str) -> State:
@@ -57,3 +58,16 @@ def save(path: str, state: State) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(asdict(state), f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)  # 原子写
+
+
+@contextmanager
+def locked(path: str):
+    """Serialize full read-modify-write transactions across poller/callback jobs."""
+    lock_path = os.path.expanduser(path) + ".lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)

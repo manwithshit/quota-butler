@@ -1,178 +1,58 @@
-# 额度管家 · quota-butler
+# Quota Butler V3
 
-> 跑在 Mac 上的 AI Agent Scheduler：**感知 Claude Code / Codex 额度 → 生成接力计划 → 飞书推送调度卡 → 用户拍板执行。**
+运行在用户 Mac 上、通过飞书交互的 Claude Code / Codex 额度管家。
 
-V1 是额度提醒器；V2 开始关注连续 AI 工作能力。核心指标是 CAS（Continuous Availability Score）：工作期间至少有一个 Agent 可用的时间比例。
+V3 只做三件事：
 
-产品事实源（PRD / 研发计划 / 测试计划）在 Obsidian：`30_Projects/额度管家-quota-butler/`。
+1. 查询两个 Agent 的额度与登录状态。
+2. 额度窗口恢复时，在 08:00–23:00 之间询问是否立即预热。
+3. 根据明天的重度使用时间，生成可调整、可采用的预热计划。
 
-## 设计要点
+完整产品定义见 [docs/PRD_V3.md](docs/PRD_V3.md)。
 
-- **零第三方依赖**：纯 stdlib（`subprocess` + `urllib`）。装了 PyYAML 用它，没装也能跑。
-- **感知**：读 macOS Keychain 里的 CC oauth token → 打 `oauth/usage` → 取 `five_hour`。
-- **token 安全**：只留内存，不打印、不写盘、不外传。
-- **状态**：一个 JSON 做去重，不上 SQLite。
-- **V2 回调**：飞书按钮使用 `{"cmd":"quota","action":...}`，由本机
-  `lark-channel-bridge-quota` fork 完成权限检查并调用 Python handler。
+## 用户入口
 
-## 目录
+- 飞书文字：`额度`、`查看额度`、`quota`
+- 菜单：当前额度、明日计划、查看当前计划
+- 每天 22:00：询问明天是否有重度使用计划
 
-```
-quota-butler/
-├── quota_butler/
-│   ├── config.py            # 配置（YAML，带零依赖 fallback）
-│   ├── state.py             # JSON 状态读写
-│   ├── providers/
-│   │   ├── base.py          # Provider 接口 + Usage 数据结构
-│   │   ├── claude.py        # CC 实现：read_usage() / warmup()
-│   │   └── codex.py         # Codex 实现：read_usage()（仅感知）
-│   ├── rules.py             # 触发规则 + 去重
-│   ├── planner.py           # V2 调度内核：生成计划 + CAS
-│   ├── plan_tasks.py        # active plan 序列化 + launchd 任务安装/取消
-│   ├── oneup.py             # Agent 恢复后的主动推送规则
-│   ├── window.py            # 窗口同一性判断（resets_at 微秒漂移容差，共享）
-│   ├── notify.py            # 飞书提醒卡 / 回执 / 状态卡（lark-cli, --as bot）
-│   ├── main.py              # 感知端入口：感知→判断→推送
-│   ├── handler.py           # S4 回调处理器：承接点击→预热→回执
-│   ├── query.py             # 群聊查询：读 CC+Codex 额度→回状态卡
-│   ├── schedule.py          # V2 调度入口：生成 AI Agent 接力计划
-│   └── chat_router.py       # 飞书文字命令兜底 router
-├── config.example.yaml
-├── deploy/com.quota-butler.plist  # launchd 模板
-└── tests/
-```
+明日计划只询问开始时间或时间区间。计划预览会明确展示：
 
-## 快速开始
+- 工作时间与采用的 Agent
+- 每次预热的具体时间
+- 第一个窗口、第二个窗口或双 Agent 接力的目的
+- 采用计划、调整 Agent、调整时间、仅提醒
+
+## 安全边界
+
+- Token 只在内存中使用，不打印、不提交。
+- Codex 401 时最多自动刷新一次。
+- Claude 登录失效时只提示 `claude auth login`，不使用预热命令修复登录。
+- 点击“立即预热”或“采用计划”即构成最终授权，不再二次确认。
+- 计划中的每个 Agent、每个时间节点使用独立 launchd 任务。
+- 23:00–08:00 不发送额度恢复提醒。
+- 状态文件使用跨进程锁，避免轮询、按钮和定时任务互相覆盖。
+
+## 本地开发
 
 ```bash
-# 1. 配置
 mkdir -p ~/.quota-butler
 cp config.example.yaml ~/.quota-butler/config.yaml
-# 编辑 feishu.chat_id
 
-# 2. 实测感知层（不发飞书）
-python3 -m quota_butler.main --dry-run
-
-# 3. 跑测试
 python3 -m unittest discover -s tests -v
+python3 -m quota_butler.query --dry-run
+python3 -m quota_butler.schedule --intent tomorrow --dry-run
 ```
 
-## 命令
+`--dry-run` 不发送飞书消息，也不会执行真实预热。
 
-| 命令 | 作用 |
-|------|------|
-| `python3 -m quota_butler.main` | 正常一轮：感知→判断→推送 |
-| `... --dry-run` | 不真发飞书，只打印决策与卡片 JSON |
-| `... --force` | 忽略阈值强制命中（联调用）|
-| `... --config PATH` | 指定配置文件 |
-| `python3 -m quota_butler.handler '<payload>'` | S4：承接卡片点击 → 预热 → 回执 |
-| `... handler --dry-run '<payload>'` | 模拟点击，**不真烧 token、不真发飞书** |
-| `python3 -m quota_butler.query` | 群聊主动查询：读 CC+Codex 当前额度 → 回状态卡 |
-| `... query --dry-run` | 只打印状态卡，**不真发飞书** |
-| `python3 -m quota_butler.schedule --intent '帮我安排明天'` | V2：生成明日 AI Agent 调度计划 |
-| `... schedule --intent '今天冲刺' --dry-run` | 只打印计划卡，**不真发飞书、不执行预热** |
-| `python3 -m quota_butler.chat_router --watch` | 启动文字命令兜底 router |
-
-## S4 · 回调闭环（点「开」→ 预热）
-
-感知端（`main.py`）是 launchd 定时拉起、跑完即退的进程，**不常驻**。按钮点击
-由本机 bridge fork 的内置 `quota` 命令承接：
-
-```
-用户点【🔥 开】
-  → 飞书 → lark-channel-bridge-quota
-  → bridge 校验群聊和管理员权限
-  → 固定 argv 启动 python3 -m quota_butler.handler
-  → callback payload 通过 stdin JSON 传入
-  → handler：warmup → claude -p 预热 → 飞书回执「✅ 已开窗」
-             skip   → 静默写状态
-```
-
-**集成契约**：卡片 callback value 必须包含 `cmd: "quota"`。fork 不执行 shell，
-只允许固定 Python 模块入口，完整 payload 通过 stdin 传给 handler。
-
-**防重复**：同一个 `resets_at` 窗口若已预热（`state.last_warmed_reset_at` 命中），
-再点「开」只回「该窗口已开过」，不重复烧 token。
-
-## 阶段进度（MVP1）
-
-- [x] S0 脚手架与配置
-- [x] S1 感知层（CC 额度）— 本机实测跑通
-- [x] S2 规则判断 + 去重
-- [x] S3 飞书卡片 — 本机真发到群验证
-- [x] S4 反向动作（开 → 预热）— 预热+回执真跑；bridge `[card-click]` 回传经真点击验证
-- [x] S5 launchd 常驻 — 已安装，launchd 受限环境下感知+推送实测跑通
-
-**✅ MVP1 完成线达成**：感知（真打接口）→ 提醒（真发卡）→ 拍板（真点击，bridge 回传成立）→ 代执行（skip 真静默 / warmup 真预热）全链路真实验证。
-
-## S5 · launchd 部署
+## 常驻服务
 
 ```bash
-bash deploy/install.sh      # 生成并加载 ~/Library/LaunchAgents/com.quota-butler.plist
-bash deploy/uninstall.sh    # 卸载（保留代码与配置）
-launchctl list | grep com.quota-butler   # 看状态（第二列=上次退出码）
-tail -f quota-butler.log    # 看运行日志
+bash deploy/install.sh
+launchctl list | grep com.quota-butler
 ```
 
-**launchd 环境两个必填坑（本机 env -i 实测复现）**，install.sh 已自动处理：
+主任务每隔 `interval_min` 分钟检查一次额度，并在每天 22:00 精确唤醒一次。卡片按钮和文字入口由现有私人 bridge fork 承接，不需要、也不应启动第二个飞书 listener。
 
-| 坑 | 现象 | 解法 |
-|----|------|------|
-| PATH 不含 `/usr/local/bin` | `lark-cli`/`claude` FileNotFoundError | plist 注入 PATH |
-| 缺 `LARK_CHANNEL` | lark-cli 回退默认 app，报 230002「Bot can NOT be out of the chat」 | plist 注入 `LARK_CHANNEL`（默认 1）|
-
-> 改了 `config.yaml` 的 `interval_min` 后需重跑 `install.sh` 才生效（间隔写死在 plist）。
-
-## 群聊主动查询 + Codex 监控
-
-除了「到点主动喊你」，还能**你主动问**：群里发触发词（状态 / 额度 / quota）→
-承接侧调 `python3 -m quota_butler.query` → 回一张状态卡（CC + Codex 一起）。
-把单向推送变成可问可答，正好补「飞书 push 不如菜单栏一眼可见」那块短板。
-
-- **Codex 支持感知和预热**：`read_usage()` 读取 ChatGPT usage；`warmup()` 通过 `codex exec`
-  触发窗口。401 时会尝试调用 Codex CLI 刷新 token 并单次重试。
-- **窗口标签自适应**：`window_seconds` 区分 5h 窗口 / 7天窗口 / 月度额度，卡片如实标注。
-- 触发词 → 命令的路由在 bridge / 承接侧配置（与 handler 的 `[card-click]` 契约同理）。
-
-## V2 · AI Agent Scheduler
-
-V2 调度入口把工作画像转成接力计划：
-
-```bash
-python3 -m quota_butler.schedule --intent '帮我安排明天' --dry-run
-python3 -m quota_butler.schedule --intent '不断粮模式'
-python3 -m quota_butler.schedule --intent '今天冲刺'
-```
-
-配置项：
-
-| 配置 | 说明 |
-|------|------|
-| `scheduler_mode` | `sustain`（不断粮）/ `balanced`（平衡）/ `savings`（节省） |
-| `scheduler_agents` | `cc`、`codex` 或 `cc,codex` |
-| `work_duration_hours` | 通常连续工作时长 |
-| `work_start` | 通常开始工作时间，本地 `HH:MM` |
-| `sleep_time` | 通常睡觉时间，本地 `HH:MM`，计划不会越过此时间 |
-| `plan_tasks_dir` | 采用计划后生成的 launchd 任务目录 |
-
-当前版本已经支持：
-
-- 状态卡进度条与可行动错误提示。
-- 人机协作时间线计划卡。
-- 采用、查看、取消计划。
-- 将工作时段内的预热/恢复节点安装为 launchd 任务。
-- Agent 恢复后主动发送 one-up 卡，支持启动、延后、今日静默。
-- 文字命令作为 bridge 故障时的兜底。
-
-卡片按钮正式路径依赖本机 bridge fork，安装和回滚见 `docs/BRIDGE_SETUP.md`。
-
-## 频率与安静时段
-
-- 轮询默认 **15 分钟**（5h 窗口不需要更密；只要 < `reset_soon_min` 就能在重置前命中）。
-- 推送有去重：**一个窗口最多 1 条**，5 分钟轮询≠5 分钟推送。
-- `quiet_hours`（本地时间，支持跨午夜如 23:00–08:00）：区间内命中也不推，免半夜打扰。
-
-## ⚠️ 红线
-
-1. **6/15 起 CC `claude -p` 独立计费**，预热会扣钱。`warmup_provider: codex` 可规避。
-2. **token 过期**：MVP1 不自动刷新，报错跳过；用一次 `claude` CLI 即可刷新 Keychain。
+私人 bridge 配置与验收见 [docs/BRIDGE_SETUP.md](docs/BRIDGE_SETUP.md)。
