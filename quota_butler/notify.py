@@ -254,7 +254,7 @@ def build_agent_control_card(
     if len(available) <= 1:
         label = PROVIDER_LABEL[available[0]] if available else "可用 Agent"
         return _card(
-            "调整 Agent",
+            "更换 AI 工具",
             [f"当前仅检测到 {label}。", "", "重新检测后会按最新状态生成计划。"],
             [
                 _button(
@@ -269,10 +269,9 @@ def build_agent_control_card(
         )
     buttons = []
     for label, strategy in (
-        ("自动安排", "auto"),
-        ("只用 Claude Code", "cc"),
-        ("只用 Codex", "codex"),
-        ("Claude Code + Codex", "both"),
+        ("Claude Code", "cc"),
+        ("Codex", "codex"),
+        ("两个都用", "both"),
     ):
         candidate = PlanRequest(
             request.target_date,
@@ -292,8 +291,8 @@ def build_agent_control_card(
             )
         )
     return _card(
-        "调整 Agent",
-        ["**选择这次计划使用的 Agent**", "", "自动安排会优先保持同一个 Agent。"],
+        "更换 AI 工具",
+        ["**明天想使用哪个 AI 工具？**"],
         buttons,
     )
 
@@ -326,12 +325,12 @@ def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
         [
             _button("采用计划", "primary", _callback("adopt_schedule", plan=record)),
             _button(
-                "调整 Agent",
+                "更换 AI 工具",
                 "default",
                 _callback("adjust_schedule_agents", request=request),
             ),
             _button(
-                "调整时间",
+                "修改使用时间",
                 "default",
                 _callback("adjust_schedule_time", request=request),
             ),
@@ -347,7 +346,11 @@ def build_active_plan_card(record: Mapping[str, Any]) -> Dict[str, Any]:
         PROVIDER_LABEL.get(agent, str(agent))
         for agent in record.get("agents") or []
     )
-    lines = [f"**当前计划 · {start}–{end}**", f"Agent：**{labels or '未记录'}**", ""]
+    lines = [
+        f"**当前计划 · {start}–{end}**",
+        f"AI 工具：**{labels or '未记录'}**",
+        "",
+    ]
     tasks = record.get("tasks") or []
     if tasks:
         for task in tasks:

@@ -64,7 +64,7 @@ class TestPlanner(unittest.TestCase):
         )
 
         self.assertEqual(plan.agents, ("codex",))
-        self.assertIn("单 Agent", plan.reason)
+        self.assertIn("只使用 Codex", plan.reason)
 
     def test_explicit_agent_control_overrides_auto_selection(self):
         request = PlanRequest(

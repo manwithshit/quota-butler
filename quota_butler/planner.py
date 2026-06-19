@@ -79,7 +79,7 @@ def build_plan(
         )
     else:
         reason = (
-            f"当前区间优先使用单 Agent：{AGENT_LABELS[first_agent]}，"
+            f"当前区间只使用 {AGENT_LABELS[first_agent]}，"
             "减少上下文切换。"
         )
     events.sort(key=lambda item: (item.at, item.agent))

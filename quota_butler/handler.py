@@ -178,7 +178,7 @@ def _handle_schedule_flow(payload, cfg, st, dry_run):
     }
     st.agent_statuses = _status_snapshot(statuses)
     if not usages:
-        _safe_receipt("暂时没有可用于规划的 Agent", cfg, dry_run)
+        _safe_receipt("暂时没有可用于规划的 AI 工具", cfg, dry_run)
         return _finish(cfg, st, 4)
     try:
         request = parse_plan_request(
@@ -228,7 +228,7 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
     ]
     if unavailable:
         labels = "、".join(unavailable)
-        _safe_receipt(f"❌ Agent 状态已变化，请重新生成计划：{labels}", cfg, dry_run)
+        _safe_receipt(f"❌ AI 工具状态已变化，请重新生成计划：{labels}", cfg, dry_run)
         return _finish(cfg, st, 4)
     try:
         tasks = (
@@ -252,7 +252,7 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
 def _warmup(payload, cfg, st, dry_run):
     provider_name = str(payload.get("provider") or "")
     if provider_name not in ("cc", "codex"):
-        _safe_receipt("预热 Agent 无效", cfg, dry_run)
+        _safe_receipt("预热工具无效", cfg, dry_run)
         return _finish(cfg, st, 4)
     task = None
     if payload.get("action") == "scheduled_warmup":

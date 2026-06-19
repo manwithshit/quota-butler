@@ -113,7 +113,8 @@ class TestHandler(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         card = push.call_args.args[0]
-        self.assertIn("Claude Code + Codex", str(card))
+        self.assertIn("两个都用", str(card))
+        self.assertNotIn("自动安排", str(card))
 
     @mock.patch("quota_butler.handler.push_interactive")
     def test_adjust_time_reopens_picker_with_current_value(self, push):

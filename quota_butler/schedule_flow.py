@@ -35,7 +35,7 @@ def parse_plan_request(
         raise ValueError("时间模式无效")
     strategy = str(raw.get("agent_strategy") or "auto").strip().lower()
     if strategy not in AGENT_STRATEGIES:
-        raise ValueError("Agent 选择无效")
+        raise ValueError("AI 工具选择无效")
     work_start = normalize_hhmm(raw.get("work_start") or "09:00")
     if time_mode == "point":
         duration = 8 if available_agent_count >= 2 else 5
