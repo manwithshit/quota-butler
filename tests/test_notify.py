@@ -134,8 +134,10 @@ class TestPlanningCards(unittest.TestCase):
                 "schedule_remind_only",
             ],
         )
+        self.assertIn("更换 AI 工具", str(card))
+        self.assertNotIn("调整 Agent", str(card))
 
-    def test_dual_agent_control_exposes_four_choices(self):
+    def test_dual_agent_control_exposes_three_explicit_tool_choices(self):
         card = build_agent_control_card(
             self.request,
             {
@@ -151,7 +153,10 @@ class TestPlanningCards(unittest.TestCase):
             if value.get("step") == "generate_plan"
         ]
 
-        self.assertEqual(strategies, ["auto", "cc", "codex", "both"])
+        text = str(card)
+        self.assertEqual(strategies, ["cc", "codex", "both"])
+        self.assertIn("两个都用", text)
+        self.assertNotIn("自动安排", text)
 
     def test_single_agent_control_has_no_meaningless_selector(self):
         card = build_agent_control_card(
@@ -162,6 +167,7 @@ class TestPlanningCards(unittest.TestCase):
         callbacks = _callbacks(card)
 
         self.assertIn("当前仅检测到 Claude Code", text)
+        self.assertIn("AI 工具", str(card))
         self.assertEqual([value["action"] for value in callbacks], ["redetect_agents"])
 
     def test_active_plan_card_shows_pending_nodes_and_cancel(self):
