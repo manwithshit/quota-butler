@@ -1,28 +1,26 @@
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
+from quota_butler.agent_status import AgentState, AgentStatus
 from quota_butler.notify import (
     build_active_plan_card,
-    build_card,
+    build_agent_control_card,
+    build_bedtime_card,
     build_command_menu_card,
-    build_oneup_card,
-    build_schedule_intensity_card,
-    build_schedule_scenario_card,
-    build_schedule_summary_card,
-    build_schedule_task_card,
-    build_schedule_time_card,
+    build_recovery_card,
     build_schedule_card,
+    build_time_card,
+    build_time_mode_card,
     build_status_card,
     usage_bar,
-    usage_status,
 )
-from quota_butler.planner import build_plan, plan_from_preferences
+from quota_butler.plan_tasks import plan_record
+from quota_butler.planner import build_plan
 from quota_butler.providers.base import Usage, WindowUsage
-from quota_butler.rules import Decision
-from quota_butler.schedule_flow import SchedulePreferences
+from quota_butler.schedule_flow import PlanRequest
 
 
-def _card_markdown(card):
+def _markdown(card):
     return "\n".join(
         element.get("content", "")
         for element in card["body"]["elements"]
@@ -30,367 +28,196 @@ def _card_markdown(card):
     )
 
 
-def _callback_values(node):
+def _callbacks(node):
     values = []
     if isinstance(node, dict):
         if node.get("type") == "callback" and isinstance(node.get("value"), dict):
             values.append(node["value"])
-        for value in node.values():
-            values.extend(_callback_values(value))
+        for child in node.values():
+            values.extend(_callbacks(child))
     elif isinstance(node, list):
-        for value in node:
-            values.extend(_callback_values(value))
+        for child in node:
+            values.extend(_callbacks(child))
     return values
 
 
 class TestStatusCard(unittest.TestCase):
-    def test_usage_bar_clamps_and_rounds_to_ten_cells(self):
+    def test_progress_bar_is_clamped(self):
         self.assertEqual(usage_bar(-1), "░░░░░░░░░░")
         self.assertEqual(usage_bar(63), "██████░░░░")
         self.assertEqual(usage_bar(100), "██████████")
-        self.assertEqual(usage_bar(120), "██████████")
 
-    def test_usage_status_uses_product_thresholds(self):
-        self.assertEqual(usage_status(0), "余量充足")
-        self.assertEqual(usage_status(30), "正常使用")
-        self.assertEqual(usage_status(70), "注意消耗")
-        self.assertEqual(usage_status(90), "接近耗尽")
-
-    def test_status_card_renders_each_agent_as_visual_block(self):
-        usage = Usage(
-            provider="codex",
-            five_hour=WindowUsage(
-                utilization=63,
-                resets_at=datetime(2026, 6, 18, 14, 30, tzinfo=timezone.utc),
-                window_seconds=5 * 3600,
+    def test_status_card_distinguishes_all_agent_states(self):
+        statuses = {
+            "cc": AgentStatus(
+                "cc",
+                AgentState.CONNECTED,
+                usage=_usage("cc", 63),
             ),
-        )
-        card = build_status_card([
-            ("codex", usage, None),
-            ("cc", None, "token 已过期"),
-        ])
-        markdown = _card_markdown(card)
+            "codex": AgentStatus(
+                "codex",
+                AgentState.UNAVAILABLE,
+                executable="/usr/local/bin/codex",
+                detail="wham/usage HTTP 503",
+            ),
+        }
 
-        self.assertIn("██████░░░░ **63%**", markdown)
-        self.assertIn("状态：**正常使用**", markdown)
-        self.assertIn("Claude Code", markdown)
-        self.assertIn("运行一次 `claude` CLI 刷新登录", markdown)
+        text = _markdown(build_status_card(statuses))
 
-    def test_oneup_card_has_start_snooze_and_mute_actions(self):
-        card = build_oneup_card(
-            "codex",
-            [("cc", None, "token 已过期")],
-            window_key="codex:2026-06-18T09:59:00+00:00",
+        self.assertIn("Claude Code", text)
+        self.assertIn("██████░░░░ **63%**", text)
+        self.assertIn("Codex", text)
+        self.assertIn("暂时无法读取", text)
+        self.assertNotIn("未检测到安装", text)
+
+
+class TestPlanningCards(unittest.TestCase):
+    def setUp(self):
+        self.request = PlanRequest(
+            date(2026, 6, 20),
+            "point",
+            "09:00",
+            "14:00",
+            "auto",
         )
-        markdown = _card_markdown(card)
-        self.assertIn("Codex 已恢复", markdown)
-        actions = [
-            column["elements"][0]["behaviors"][0]["value"]["action"]
-            for row in card["body"]["elements"]
-            if row.get("tag") == "column_set"
-            for column in row["columns"]
+        self.plan = build_plan(self.request, {"cc": _usage("cc", 30)})
+
+    def test_time_mode_card_only_asks_point_or_range(self):
+        card = build_time_mode_card(date(2026, 6, 20))
+        text = _markdown(card)
+        actions = [value["step"] for value in _callbacks(card)]
+
+        self.assertIn("重度使用时间", text)
+        self.assertEqual(actions, ["edit_time_point", "edit_time_range"])
+        self.assertNotIn("任务类型", text)
+        self.assertNotIn("工作强度", text)
+
+    def test_point_time_card_uses_one_native_picker(self):
+        card = build_time_card(self.request)
+        form = next(e for e in card["body"]["elements"] if e.get("tag") == "form")
+        pickers = [e for e in form["elements"] if e.get("tag") == "picker_time"]
+
+        self.assertEqual([picker["name"] for picker in pickers], ["work_start"])
+        self.assertEqual(pickers[0]["initial_time"], "09:00")
+        submit = form["elements"][-1]
+        self.assertEqual(submit["behaviors"][0]["value"]["step"], "generate_plan")
+
+    def test_range_time_card_uses_start_and_end_pickers(self):
+        request = PlanRequest(date(2026, 6, 20), "range", "09:00", "18:00", "auto")
+        card = build_time_card(request)
+        form = next(e for e in card["body"]["elements"] if e.get("tag") == "form")
+        pickers = [e for e in form["elements"] if e.get("tag") == "picker_time"]
+
+        self.assertEqual(
+            [picker["name"] for picker in pickers],
+            ["work_start", "work_end"],
+        )
+
+    def test_plan_card_shows_exact_warmups_and_adjustment_buttons(self):
+        card = build_schedule_card(self.plan)
+        text = _markdown(card)
+        actions = [value["action"] for value in _callbacks(card)]
+
+        self.assertIn("09:00–14:00", text)
+        self.assertIn("06:30", text)
+        self.assertIn("11:30", text)
+        self.assertIn("准备第一个窗口", text)
+        self.assertIn("恢复后准备第二个窗口", text)
+        self.assertIn("预计连续覆盖：**09:00–14:00**", text)
+        self.assertNotIn("CAS", text)
+        self.assertEqual(
+            actions,
+            [
+                "adopt_schedule",
+                "adjust_schedule_agents",
+                "adjust_schedule_time",
+                "schedule_remind_only",
+            ],
+        )
+
+    def test_dual_agent_control_exposes_four_choices(self):
+        card = build_agent_control_card(
+            self.request,
+            {
+                "cc": AgentStatus("cc", AgentState.CONNECTED, usage=_usage("cc", 20)),
+                "codex": AgentStatus(
+                    "codex", AgentState.CONNECTED, usage=_usage("codex", 30)
+                ),
+            },
+        )
+        strategies = [
+            value["agent_strategy"]
+            for value in _callbacks(card)
+            if value.get("step") == "generate_plan"
         ]
-        self.assertEqual(actions, ["oneup_start", "oneup_snooze", "oneup_mute_today"])
-        snooze = card["body"]["elements"][1]["columns"][1]["elements"][0]
-        self.assertEqual(
-            snooze["behaviors"][0]["value"]["window_key"],
-            "codex:2026-06-18T09:59:00+00:00",
-        )
-        start = card["body"]["elements"][1]["columns"][0]["elements"][0]
-        self.assertEqual(
-            start["behaviors"][0]["value"]["window_key"],
-            "codex:2026-06-18T09:59:00+00:00",
-        )
 
-    def test_all_interactive_cards_use_private_quota_command_protocol(self):
-        usage = Usage(
-            provider="cc",
-            five_hour=WindowUsage(
-                utilization=50,
-                resets_at=datetime(2026, 6, 18, 12, 0, tzinfo=timezone.utc),
-                window_seconds=5 * 3600,
-            ),
+        self.assertEqual(strategies, ["auto", "cc", "codex", "both"])
+
+    def test_single_agent_control_has_no_meaningless_selector(self):
+        card = build_agent_control_card(
+            self.request,
+            {"cc": AgentStatus("cc", AgentState.CONNECTED, usage=_usage("cc", 20))},
         )
-        start = datetime(2026, 6, 18, 9, 0, tzinfo=timezone.utc)
-        plan = build_plan(
-            mode="balanced",
-            agents=("cc", "codex"),
-            work_start=start,
-            work_end=start + timedelta(hours=8),
-        )
+        text = _markdown(card)
+        callbacks = _callbacks(card)
+
+        self.assertIn("当前仅检测到 Claude Code", text)
+        self.assertEqual([value["action"] for value in callbacks], ["redetect_agents"])
+
+    def test_active_plan_card_shows_pending_nodes_and_cancel(self):
+        record = plan_record(self.plan)
+        record["status"] = "active"
+        record["tasks"] = [{"provider": "cc", "scheduled_for": record["events"][0]["at"]}]
+
+        card = build_active_plan_card(record)
+
+        self.assertIn("06:30", _markdown(card))
+        self.assertEqual(_callbacks(card)[0]["action"], "cancel_schedule")
+
+
+class TestReminderAndMenuCards(unittest.TestCase):
+    def test_recovery_card_has_direct_warmup_snooze_and_skip(self):
+        card = build_recovery_card("cc", "window-1")
+        actions = [value["action"] for value in _callbacks(card)]
+        self.assertEqual(actions, ["warmup_now", "recovery_snooze", "recovery_skip"])
+
+    def test_bedtime_card_asks_only_if_tomorrow_is_heavy(self):
+        card = build_bedtime_card()
+        text = _markdown(card)
+        actions = [value["action"] for value in _callbacks(card)]
+        self.assertIn("明天有重度使用 AI 的计划吗", text)
+        self.assertEqual(actions, ["schedule_intent", "tomorrow_skip"])
+
+    def test_menu_only_keeps_three_v3_entries(self):
+        card = build_command_menu_card()
+        actions = [value["action"] for value in _callbacks(card)]
+        self.assertEqual(actions, ["query_status", "schedule_intent", "view_schedule"])
+
+    def test_all_callbacks_use_private_quota_command(self):
         cards = [
-            build_card(usage, Decision(True, "test", 10)),
-            build_oneup_card("codex", window_key="w1"),
-            build_schedule_card(plan),
-            build_active_plan_card(
-                {
-                    "plan_id": "p1",
-                    "mode": "balanced",
-                    "work_start": "2026-06-18T09:00:00+00:00",
-                    "work_end": "2026-06-18T17:00:00+00:00",
-                    "tasks": [],
-                }
-            ),
+            build_recovery_card("codex", "w1"),
+            build_bedtime_card(),
+            build_time_mode_card(date(2026, 6, 20)),
+            build_schedule_card(self.plan if hasattr(self, "plan") else build_plan(
+                PlanRequest(date(2026, 6, 20), "point", "09:00", "14:00"),
+                {"cc": _usage("cc", 20)},
+            )),
             build_command_menu_card(),
         ]
-
-        values = [value for card in cards for value in _callback_values(card)]
-        self.assertTrue(values)
-        self.assertTrue(all(value.get("cmd") == "quota" for value in values))
-        self.assertTrue(all("__claude_cb" not in value for value in values))
-
-
-class TestScheduleCard(unittest.TestCase):
-    def test_task_card_uses_two_by_two_mobile_button_grid(self):
-        card = build_schedule_task_card(date(2026, 6, 19))
-        rows = [
-            element for element in card["body"]["elements"]
-            if element.get("tag") == "column_set"
-        ]
-
-        self.assertEqual([len(row["columns"]) for row in rows], [2, 2])
-        buttons = [
-            column["elements"][0]
-            for row in rows
-            for column in row["columns"]
-        ]
-        self.assertTrue(all(button["width"] == "fill" for button in buttons))
-
-    def test_task_card_buttons_preserve_context_and_advance_to_intensity(self):
-        target = date(2026, 6, 19)
-        card = build_schedule_task_card(target)
-        values = _callback_values(card)
-
-        self.assertEqual(len(values), 4)
-        self.assertEqual(
-            {value["preferences"]["task_type"] for value in values},
-            {"coding", "content", "research", "mixed"},
-        )
-        self.assertTrue(all(value["step"] == "intensity" for value in values))
-        self.assertTrue(all(value["target_date"] == "2026-06-19" for value in values))
-
-    def test_intensity_card_buttons_preserve_task_and_advance_to_time(self):
-        prefs = SchedulePreferences(task_type="coding")
-        card = build_schedule_intensity_card(date(2026, 6, 19), prefs)
-        values = _callback_values(card)
-
-        self.assertEqual(len(values), 3)
-        self.assertEqual(
-            {value["preferences"]["intensity"] for value in values},
-            {"light", "normal", "high"},
-        )
         self.assertTrue(
-            all(value["preferences"]["task_type"] == "coding" for value in values)
-        )
-        self.assertTrue(all(value["step"] == "time" for value in values))
-
-    def test_choice_and_summary_actions_never_exceed_two_columns_per_row(self):
-        prefs = SchedulePreferences(task_type="coding", daily_scenario="独立开发产品")
-        cards = [
-            build_schedule_intensity_card(date(2026, 6, 19), prefs),
-            build_schedule_summary_card(date(2026, 6, 19), prefs),
-        ]
-
-        for card in cards:
-            rows = [
-                element for element in card["body"]["elements"]
-                if element.get("tag") == "column_set"
-            ]
-            self.assertTrue(rows)
-            self.assertTrue(all(len(row["columns"]) <= 2 for row in rows))
-
-    def test_first_use_scenario_card_accepts_manual_input(self):
-        card = build_schedule_scenario_card(
-            date(2026, 6, 19),
-            SchedulePreferences(),
-            return_step="task",
-        )
-        form = next(
-            element for element in card["body"]["elements"]
-            if element.get("tag") == "form"
-        )
-        field = next(
-            element for element in form["elements"]
-            if element.get("tag") == "input"
-        )
-        submit = form["elements"][-1]
-
-        self.assertEqual(field["name"], "daily_scenario")
-        self.assertTrue(field["required"])
-        self.assertEqual(submit["form_action_type"], "submit")
-        value = submit["behaviors"][0]["value"]
-        self.assertEqual(value["step"], "scenario_saved")
-        self.assertEqual(value["return_step"], "task")
-
-    def test_time_card_uses_required_native_time_pickers_in_a_form(self):
-        prefs = SchedulePreferences(
-            task_type="research",
-            intensity="high",
-            work_start="10:00",
-            work_end="18:00",
-        )
-        card = build_schedule_time_card(date(2026, 6, 19), prefs)
-        form = next(
-            element for element in card["body"]["elements"]
-            if element.get("tag") == "form"
-        )
-        pickers = [
-            element for element in form["elements"]
-            if element.get("tag") == "picker_time"
-        ]
-
-        self.assertEqual([picker["name"] for picker in pickers], [
-            "work_start",
-            "work_end",
-        ])
-        self.assertEqual([picker["initial_time"] for picker in pickers], [
-            "10:00",
-            "18:00",
-        ])
-        self.assertTrue(all(picker["required"] for picker in pickers))
-        submit = form["elements"][-1]
-        self.assertEqual(submit["form_action_type"], "submit")
-        value = submit["behaviors"][0]["value"]
-        self.assertEqual(value["step"], "summary")
-        self.assertEqual(value["preferences"]["task_type"], "research")
-
-    def test_summary_card_shows_beijing_time_and_edit_actions(self):
-        prefs = SchedulePreferences(
-            task_type="content",
-            intensity="light",
-            work_start="10:00",
-            work_end="16:00",
-            daily_scenario="独立开发产品",
-        )
-        card = build_schedule_summary_card(date(2026, 6, 19), prefs)
-        markdown = _card_markdown(card)
-        values = _callback_values(card)
-
-        self.assertIn("内容创作", markdown)
-        self.assertIn("轻量", markdown)
-        self.assertIn("10:00–16:00", markdown)
-        self.assertIn("北京时间", markdown)
-        self.assertIn("独立开发产品", markdown)
-        self.assertEqual(
-            [value["step"] for value in values],
-            ["generate", "task", "intensity", "time", "scenario"],
+            all(value.get("cmd") == "quota" for card in cards for value in _callbacks(card))
         )
 
-    def test_manual_scenario_is_escaped_before_markdown_rendering(self):
-        prefs = SchedulePreferences(daily_scenario="**伪标题** [链接](x)")
 
-        markdown = _card_markdown(
-            build_schedule_summary_card(date(2026, 6, 19), prefs)
-        )
-
-        self.assertNotIn("日常场景：****伪标题****", markdown)
-        self.assertIn(r"\*\*伪标题\*\*", markdown)
-        self.assertIn(r"\[链接\]\(x\)", markdown)
-
-    def test_schedule_card_is_human_readable_and_shows_trust_metrics(self):
-        plan = plan_from_preferences(
-            SchedulePreferences(
-                task_type="coding",
-                intensity="normal",
-                work_start="09:00",
-                work_end="17:00",
-                daily_scenario="独立开发产品",
-            ),
-            target_date=date(2026, 6, 19),
-            agents=("codex",),
-        )
-        card = build_schedule_card(plan)
-        markdown = _card_markdown(card)
-
-        self.assertIn("09:00–17:00", markdown)
-        self.assertIn("本次使用：**Codex**", markdown)
-        self.assertIn("日常场景：**独立开发产品**", markdown)
-        self.assertNotIn("Claude Code", markdown)
-        self.assertIn("计划覆盖率：**100%**", markdown)
-        self.assertIn("预计空档：**0 分钟**", markdown)
-        self.assertIn("预计接力：**1 次**", markdown)
-        self.assertIn("代码实现与测试", markdown)
-        self.assertIn("按当前额度窗口估算", markdown)
-        self.assertNotIn("CAS", markdown)
-
-    def test_schedule_card_has_exactly_three_required_actions(self):
-        plan = plan_from_preferences(
-            SchedulePreferences(task_type="content", intensity="high"),
-            target_date=date(2026, 6, 19),
-            agents=("codex",),
-        )
-        card = build_schedule_card(plan)
-        values = _callback_values(card)
-
-        self.assertEqual(
-            [value["action"] for value in values],
-            ["adopt_schedule", "schedule_flow", "schedule_remind_only"],
-        )
-        adjust = values[1]
-        self.assertEqual(adjust["step"], "summary")
-        self.assertEqual(adjust["preferences"]["task_type"], "content")
-        self.assertEqual(values[0]["plan"]["plan_version"], 2)
-        rows = [
-            element for element in card["body"]["elements"]
-            if element.get("tag") == "column_set"
-        ]
-        self.assertEqual([len(row["columns"]) for row in rows], [2, 1])
-
-    def test_schedule_card_never_surfaces_unavailable_agent_warning(self):
-        plan = plan_from_preferences(
-            SchedulePreferences(),
-            target_date=date(2026, 6, 19),
-            agents=("codex",),
-        )
-        card = build_schedule_card(
-            plan,
-            warnings=("Claude Code 不可用：token 已过期",),
-        )
-
-        self.assertNotIn("Claude Code 不可用", _card_markdown(card))
-
-    def test_schedule_card_does_not_claim_claude_will_be_preheated(self):
-        plan = plan_from_preferences(
-            SchedulePreferences(),
-            target_date=date(2026, 6, 19),
-            agents=("cc", "codex"),
-        )
-
-        markdown = _card_markdown(build_schedule_card(plan))
-
-        self.assertNotIn("**Claude Code** 提前准备", markdown)
-        self.assertIn("**Claude Code** 预计可用，作为接力候选", markdown)
-        self.assertIn("**Codex** 提前预热", markdown)
-
-    def test_active_plan_card_lists_pending_tasks_and_cancel_action(self):
-        card = build_active_plan_card({
-            "plan_id": "p1",
-            "mode": "balanced",
-            "work_start": "2026-06-19T09:00:00+00:00",
-            "work_end": "2026-06-19T17:00:00+00:00",
-            "tasks": [
-                {
-                    "provider": "codex",
-                    "scheduled_for": "2026-06-19T08:30:00+00:00",
-                    "status": "pending",
-                }
-            ],
-        })
-        markdown = _card_markdown(card)
-        self.assertIn("当前生效计划", markdown)
-        self.assertIn("Codex", markdown)
-        button = card["body"]["elements"][-1]["columns"][0]["elements"][0]
-        self.assertEqual(button["behaviors"][0]["value"]["action"], "cancel_schedule")
-
-    def test_command_menu_exposes_active_plan(self):
-        card = build_command_menu_card()
-        actions = [
-            column["elements"][0]["behaviors"][0]["value"]["action"]
-            for row in card["body"]["elements"]
-            if row.get("tag") == "column_set"
-            for column in row["columns"]
-        ]
-        self.assertIn("view_schedule", actions)
+def _usage(provider, utilization):
+    return Usage(
+        provider,
+        WindowUsage(
+            utilization,
+            datetime(2026, 6, 20, 11, 30, tzinfo=timezone.utc),
+            5 * 3600,
+        ),
+    )
 
 
 if __name__ == "__main__":

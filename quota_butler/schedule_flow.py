@@ -1,108 +1,67 @@
-"""Pure data model for the guided schedule-card flow."""
+"""Pure V3 request model for tomorrow-plan cards."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Mapping, Optional
 
-FLOW_VERSION = 3
-
-TASK_TYPE_ALIASES = {
-    "coding": "coding",
-    "编码开发": "coding",
-    "content": "content",
-    "内容创作": "content",
-    "research": "research",
-    "调研分析": "research",
-    "mixed": "mixed",
-    "混合任务": "mixed",
-}
-
-INTENSITY_ALIASES = {
-    "light": "light",
-    "轻量": "light",
-    "normal": "normal",
-    "正常": "normal",
-    "high": "high",
-    "高强度": "high",
-}
-
-TASK_TYPE_LABELS = {
-    "coding": "编码开发",
-    "content": "内容创作",
-    "research": "调研分析",
-    "mixed": "混合任务",
-}
-
-INTENSITY_LABELS = {
-    "light": "轻量",
-    "normal": "正常",
-    "high": "高强度",
-}
+FLOW_VERSION = 4
+TIME_MODES = ("point", "range")
+AGENT_STRATEGIES = ("auto", "cc", "codex", "both")
 
 
 @dataclass(frozen=True)
-class SchedulePreferences:
-    task_type: str = "mixed"
-    intensity: str = "normal"
+class PlanRequest:
+    target_date: date
+    time_mode: str = "point"
     work_start: str = "09:00"
-    work_end: str = "17:00"
-    daily_scenario: str = ""
+    work_end: str = "14:00"
+    agent_strategy: str = "auto"
 
 
-def parse_preferences(value: Optional[Mapping[str, Any]]) -> SchedulePreferences:
-    raw = value or {}
-    task_type = _normalize_choice(
-        raw.get("task_type", "mixed"),
-        TASK_TYPE_ALIASES,
-        "任务类型",
-    )
-    intensity = _normalize_choice(
-        raw.get("intensity", "normal"),
-        INTENSITY_ALIASES,
-        "工作强度",
-    )
-    work_start = _normalize_hhmm(raw.get("work_start", "09:00"))
-    work_end = _normalize_hhmm(raw.get("work_end", "17:00"))
-    daily_scenario = str(raw.get("daily_scenario") or "").strip()
-    if len(daily_scenario) > 120:
-        raise ValueError("日常使用场景不能超过 120 个字符")
-    validate_work_time(work_start, work_end)
-    return SchedulePreferences(
-        task_type,
-        intensity,
-        work_start,
-        work_end,
-        daily_scenario,
-    )
-
-
-def validate_work_time(work_start: str, work_end: str) -> int:
-    start_minutes = _minutes(_normalize_hhmm(work_start))
-    end_minutes = _minutes(_normalize_hhmm(work_end))
-    duration = end_minutes - start_minutes
-    if duration <= 0:
-        raise ValueError("工作结束时间必须晚于开始时间")
-    if duration > 16 * 60:
-        raise ValueError("工作时段不能超过 16 小时")
-    return duration
-
-
-def flow_payload(
+def parse_plan_request(
+    value: Optional[Mapping[str, Any]],
     *,
-    step: str,
-    target_date: date,
-    preferences: SchedulePreferences,
-    **fields: Any,
-) -> Dict[str, Any]:
+    available_agent_count: int,
+) -> PlanRequest:
+    raw = dict(value or {})
+    try:
+        target_date = date.fromisoformat(str(raw.get("target_date") or ""))
+    except ValueError as exc:
+        raise ValueError("规划日期无效") from exc
+    time_mode = str(raw.get("time_mode") or "point").strip().lower()
+    if time_mode not in TIME_MODES:
+        raise ValueError("时间模式无效")
+    strategy = str(raw.get("agent_strategy") or "auto").strip().lower()
+    if strategy not in AGENT_STRATEGIES:
+        raise ValueError("Agent 选择无效")
+    work_start = normalize_hhmm(raw.get("work_start") or "09:00")
+    if time_mode == "point":
+        duration = 8 if available_agent_count >= 2 else 5
+        work_end = _add_hours(work_start, duration)
+    else:
+        work_end = normalize_hhmm(raw.get("work_end") or "")
+        validate_work_time(work_start, work_end)
+    return PlanRequest(
+        target_date=target_date,
+        time_mode=time_mode,
+        work_start=work_start,
+        work_end=work_end,
+        agent_strategy=strategy,
+    )
+
+
+def flow_payload(step: str, request: PlanRequest, **fields: Any) -> Dict[str, Any]:
+    request_dict = asdict(request)
+    request_dict["target_date"] = request.target_date.isoformat()
     return {
         "cmd": "quota",
         "action": "schedule_flow",
         "flow_version": FLOW_VERSION,
         "step": step,
-        "target_date": target_date.isoformat(),
-        "preferences": asdict(preferences),
+        "target_date": request.target_date.isoformat(),
+        "request": request_dict,
         **fields,
     }
 
@@ -113,24 +72,17 @@ def validate_flow_context(
     today: Optional[date] = None,
 ) -> date:
     if payload.get("flow_version") != FLOW_VERSION:
-        raise ValueError("规划卡版本已失效")
+        raise ValueError("该卡片已失效，请重新打开菜单")
     try:
         target = date.fromisoformat(str(payload.get("target_date") or ""))
     except ValueError as exc:
         raise ValueError("规划日期无效") from exc
     if target < (today or date.today()):
-        raise ValueError("规划卡已过期")
+        raise ValueError("该卡片已过期，请重新规划")
     return target
 
 
-def _normalize_choice(value: Any, aliases: Mapping[str, str], label: str) -> str:
-    normalized = aliases.get(str(value).strip())
-    if normalized is None:
-        raise ValueError(f"{label}无效")
-    return normalized
-
-
-def _normalize_hhmm(value: Any) -> str:
+def normalize_hhmm(value: Any) -> str:
     text = str(value).strip().split()[0]
     parts = text.split(":")
     if len(parts) != 2:
@@ -144,6 +96,25 @@ def _normalize_hhmm(value: Any) -> str:
     return f"{hour:02d}:{minute:02d}"
 
 
+def validate_work_time(work_start: str, work_end: str) -> int:
+    start = _minutes(normalize_hhmm(work_start))
+    end = _minutes(normalize_hhmm(work_end))
+    duration = end - start
+    if duration <= 0:
+        raise ValueError("结束时间必须晚于开始时间")
+    if duration > 16 * 60:
+        raise ValueError("重度使用区间不能超过 16 小时")
+    return duration
+
+
+def _add_hours(value: str, hours: int) -> str:
+    start = datetime.combine(date.today(), datetime.strptime(value, "%H:%M").time())
+    end = start + timedelta(hours=hours)
+    if end.date() != start.date():
+        raise ValueError("默认计划不能跨天")
+    return end.strftime("%H:%M")
+
+
 def _minutes(value: str) -> int:
     hour, minute = (int(part) for part in value.split(":"))
-    return (hour * 60) + minute
+    return hour * 60 + minute

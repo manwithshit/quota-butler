@@ -1,50 +1,23 @@
-"""S4 · 卡片回调处理器（承接「开 / 不开」点击）。
-
-## 它在闭环里的位置
-
-quota-butler 的感知端（main.py）是 launchd 定时拉起、跑完即退的进程，**不常驻**，
-所以按钮点击不可能落回那个已退出的进程。回调走本机 bridge fork 的 quota 命令：
-
-    用户点【🔥 开】
-      → 飞书 → lark-channel-bridge-quota
-      → bridge 校验操作者权限，以固定 argv 启动本处理器
-      → 完整 callback payload 通过 stdin JSON 传入
-      → 本处理器：action=warmup → 调 provider.warmup() → 发回执到群
-                  action=skip   → 静默写状态
-
-这样「点开 → 预热 → 回执」是确定性的、可复现、可截图，不依赖 agent 自由发挥。
-
-## 集成契约（给私人 bridge fork）
-
-卡片 callback value 使用 `{"cmd": "quota", "action": ...}`。bridge 把完整 JSON
-通过 stdin 交给：
-
-    python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
-
-## 防重复
-
-同一个 resets_at 窗口若已预热过（state.last_warmed_reset_at 命中），再点「开」只回一句
-「该窗口已开过」，不重复烧 token。
-"""
+"""Handle verified Feishu card callbacks for Quota Butler V3."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, Mapping
 
 from . import config as config_mod
 from . import state as state_mod
+from .agent_status import detect_agents
 from .notify import (
-    PROVIDER_LABEL,
     NotifyError,
-    build_schedule_intensity_card,
-    build_schedule_scenario_card,
-    build_schedule_summary_card,
-    build_schedule_task_card,
-    build_schedule_time_card,
+    build_agent_control_card,
+    build_time_card,
+    build_time_mode_card,
     push_active_plan_card,
-    push_guided_schedule_card,
+    push_interactive,
     push_receipt,
     push_schedule_card,
     push_status_card,
@@ -55,496 +28,343 @@ from .plan_tasks import (
     install_plan_tasks,
     validate_plan_record,
 )
-from .planner import parse_agents, plan_from_config, plan_from_preferences
-from .schedule_flow import SchedulePreferences, parse_preferences, validate_flow_context
+from .planner import build_plan
 from .providers import get_provider
 from .providers.base import ProviderError
-from .window import same_window
+from .schedule_flow import (
+    FLOW_VERSION,
+    PlanRequest,
+    parse_plan_request,
+    validate_flow_context,
+)
 
 DEFAULT_CONFIG = "~/.quota-butler/config.yaml"
 
 
-def handle(payload: dict, config_path: str = DEFAULT_CONFIG,
-           dry_run: bool = False) -> int:
+def handle(
+    payload: dict,
+    config_path: str = DEFAULT_CONFIG,
+    dry_run: bool = False,
+) -> int:
     cfg = config_mod.load(config_path)
-    st = state_mod.load(cfg.resolved_state_path)
-    action = (payload or {}).get("action", "")
-    resets_at = (payload or {}).get("resets_at")
+    with state_mod.locked(cfg.resolved_state_path):
+        return _handle_locked(payload, cfg, config_path, dry_run)
 
+
+def _handle_locked(payload, cfg, config_path, dry_run):
+    st = state_mod.load(cfg.resolved_state_path)
+    _migrate_v2(st)
+    action = str((payload or {}).get("action") or "")
     st.last_action = action
     st.last_run_at = datetime.now(timezone.utc).isoformat()
 
-    if action == "skip":
-        print("[回调] 用户点了「不开」，静默")
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
+    try:
+        if action == "query_status":
+            statuses = detect_agents()
+            push_status_card(statuses, cfg, dry_run=dry_run)
+            st.agent_statuses = _status_snapshot(statuses)
+            return _finish(cfg, st, 0)
 
-    if action == "schedule_intent":
-        intent = str((payload or {}).get("intent") or "")
-        target_date = date.today()
-        if "明天" in intent or "tomorrow" in intent.lower():
-            target_date += timedelta(days=1)
-        try:
-            profile = _schedule_profile(st, payload or {})
-            if profile.get("daily_scenario"):
-                preferences = parse_preferences(profile)
-                card = build_schedule_task_card(target_date, preferences)
-            else:
-                card = build_schedule_scenario_card(
-                    target_date,
-                    SchedulePreferences(),
-                    return_step="task",
-                )
-            push_guided_schedule_card(card, cfg, dry_run=dry_run)
-        except NotifyError as e:
-            print(f"[回调] 规划引导卡发送失败：{e}", file=sys.stderr)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 3
-        print(f"[回调] 已开始规划流程：{target_date.isoformat()}")
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
+        if action == "schedule_intent":
+            target = _target_date(payload)
+            push_interactive(build_time_mode_card(target), cfg, dry_run)
+            return _finish(cfg, st, 0)
 
-    if action == "schedule_flow":
-        try:
-            target_date = validate_flow_context(payload or {})
-        except ValueError:
-            _safe_receipt("规划卡已失效，请重新规划", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
+        if action == "schedule_flow":
+            return _handle_schedule_flow(payload, cfg, st, dry_run)
 
-        raw_preferences = dict((payload or {}).get("preferences") or {})
-        form_value = (payload or {}).get("form_value")
-        if isinstance(form_value, dict):
-            raw_preferences.update({
-                key: form_value[key]
-                for key in ("work_start", "work_end", "daily_scenario")
-                if key in form_value
-            })
-        step = str((payload or {}).get("step") or "")
-        if step == "scenario_saved" and not str(
-            raw_preferences.get("daily_scenario") or ""
-        ).strip():
-            try:
-                fallback = parse_preferences(
-                    (payload or {}).get("preferences") or {}
-                )
-                card = build_schedule_scenario_card(
-                    target_date,
-                    fallback,
-                    return_step=str((payload or {}).get("return_step") or "task"),
-                    error="请填写日常使用场景",
-                )
-                push_guided_schedule_card(card, cfg, dry_run=dry_run)
-            except (ValueError, NotifyError) as send_error:
-                print(f"[回调] 场景卡发送失败：{send_error}", file=sys.stderr)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 3
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-        try:
-            preferences = parse_preferences(raw_preferences)
-        except ValueError as e:
-            if not isinstance(form_value, dict):
-                _safe_receipt(f"规划偏好无效：{e}，请重新规划", cfg, dry_run)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 4
-            try:
-                fallback = parse_preferences((payload or {}).get("preferences") or {})
-                card = build_schedule_time_card(
-                    target_date,
-                    fallback,
-                    error=str(e),
-                )
-                push_guided_schedule_card(card, cfg, dry_run=dry_run)
-            except (ValueError, NotifyError) as send_error:
-                print(f"[回调] 时间卡发送失败：{send_error}", file=sys.stderr)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 3
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-
-        if step == "scenario_saved":
-            profiles = dict(st.schedule_profiles or {})
-            profiles[_schedule_profile_key(payload or {})] = {
-                "daily_scenario": preferences.daily_scenario,
-            }
-            st.schedule_profiles = profiles
-            return_step = str((payload or {}).get("return_step") or "task")
-            if return_step == "summary":
-                card = build_schedule_summary_card(target_date, preferences)
-            else:
-                card = build_schedule_task_card(target_date, preferences)
-            try:
-                push_guided_schedule_card(card, cfg, dry_run=dry_run)
-            except NotifyError as e:
-                print(f"[回调] 保存场景后发卡失败：{e}", file=sys.stderr)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 3
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-
-        if step == "generate":
-            available, _ = _agent_availability(("cc", "codex"))
-            if not available:
-                _safe_receipt("暂时没有可用 Agent，无法生成计划", cfg, dry_run)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 4
-            try:
-                plan = plan_from_preferences(
-                    preferences,
-                    target_date=target_date,
-                    agents=available,
-                )
-                push_schedule_card(plan, cfg, dry_run=dry_run)
-            except (ValueError, NotifyError) as e:
-                print(f"[回调] 生成计划失败：{e}", file=sys.stderr)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 3
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-
-        builders = {
-            "task": build_schedule_task_card,
-            "intensity": build_schedule_intensity_card,
-            "time": build_schedule_time_card,
-            "summary": build_schedule_summary_card,
-        }
-        if step == "scenario":
-            try:
-                card = build_schedule_scenario_card(
-                    target_date,
-                    preferences,
-                    return_step="summary",
-                )
-                push_guided_schedule_card(card, cfg, dry_run=dry_run)
-            except NotifyError as e:
-                print(f"[回调] 场景卡发送失败：{e}", file=sys.stderr)
-                state_mod.save(cfg.resolved_state_path, st)
-                return 3
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-        builder = builders.get(step)
-        if builder is None:
-            print(f"[回调] 未知规划步骤={step!r}", file=sys.stderr)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 1
-        try:
-            card = builder(target_date, preferences)
-            push_guided_schedule_card(card, cfg, dry_run=dry_run)
-        except NotifyError as e:
-            print(f"[回调] 规划卡发送失败：{e}", file=sys.stderr)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 3
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
-
-    if action == "query_status":
-        results = []
-        for name in ("cc", "codex"):
-            try:
-                usage = get_provider(name).read_usage()
-                results.append((name, usage, None))
-            except (ProviderError, NotImplementedError) as e:
-                results.append((name, None, str(e)))
-        try:
-            push_status_card(results, cfg, dry_run=dry_run)
-        except NotifyError as e:
-            print(f"[回调] 状态卡发送失败：{e}", file=sys.stderr)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 3
-        print("[回调] 已发送额度状态卡")
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
-
-    if action == "adopt_schedule":
-        if st.active_plan and st.active_plan.get("status") == "active":
-            _safe_receipt("已有生效计划，请先取消后再采用新计划", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
-        candidate = (payload or {}).get("plan")
-        if not isinstance(candidate, dict) or candidate.get("plan_version") != 2:
-            _safe_receipt("旧计划已失效，请重新规划", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
-        try:
-            record = validate_plan_record(candidate)
-            planned_agents = tuple(dict.fromkeys(
-                str(agent)
-                for agent in (
-                    record.get("agents")
-                    or [event.get("agent") for event in record.get("events") or []]
-                )
-                if agent
-            ))
-            _, failures = _agent_availability(planned_agents)
-            if failures:
-                detail = "；".join(failures)
-                _safe_receipt(
-                    f"❌ 计划包含不可用 Agent，已拒绝采用：{detail}",
-                    cfg,
-                    dry_run,
-                )
-                state_mod.save(cfg.resolved_state_path, st)
-                return 4
-            tasks = [] if dry_run else install_plan_tasks(
-                record, cfg, config_path=config_path
-            )
-        except PlanTaskError as e:
-            print(f"[回调] 采用计划失败：{e}", file=sys.stderr)
-            _safe_receipt(f"❌ 采用计划失败：{e}", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 3
-        if not dry_run:
-            record["status"] = "active"
-            record["adopted_at"] = datetime.now(timezone.utc).isoformat()
-            record["tasks"] = tasks
-            st.active_plan = record
-            state_mod.save(cfg.resolved_state_path, st)
-        _safe_receipt(f"✅ 已采用计划，已创建 {len(tasks)} 个预热任务", cfg, dry_run)
-        print(f"[回调] 已采用计划 {record['plan_id']}，任务数={len(tasks)}")
-        return 0
-
-    if action == "cancel_schedule":
-        if not st.active_plan:
-            _safe_receipt("当前没有生效计划", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-        if not dry_run:
-            cancel_plan_tasks(st.active_plan.get("tasks") or [])
-            st.active_plan = None
-            state_mod.save(cfg.resolved_state_path, st)
-        _safe_receipt("✅ 已取消计划，未执行任务已删除", cfg, dry_run)
-        print("[回调] 已取消当前计划")
-        return 0
-
-    if action == "view_schedule":
-        if not st.active_plan:
-            _safe_receipt("当前没有生效计划", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 0
-        try:
-            push_active_plan_card(st.active_plan, cfg, dry_run=dry_run)
-        except NotifyError as e:
-            print(f"[回调] 当前计划卡发送失败：{e}", file=sys.stderr)
-            return 3
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
-
-    if action == "schedule_remind_only":
-        _safe_receipt("已保留为提醒，不会创建本地预热任务", cfg, dry_run)
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
-
-    if action == "oneup_start":
-        provider_name = str((payload or {}).get("provider") or "")
-        window_key = str((payload or {}).get("window_key") or "")
-        label = PROVIDER_LABEL.get(provider_name, provider_name)
-        if provider_name != "codex":
-            _safe_receipt("真实预热仅允许 Codex", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
-        if window_key and st.last_oneup_started_window == window_key:
-            _safe_receipt(f"{label} 在这个恢复窗口已经启动过，不重复预热", cfg, dry_run)
-            return 0
-        if dry_run:
-            _safe_receipt(f"✅ {label} 已启动（dry-run）", cfg, True)
-            print(f"[回调] one-up 已启动 {label}（dry-run）")
-            return 0
-        try:
-            get_provider(provider_name).warmup(cfg.warmup_prompt)
-        except (ProviderError, NotImplementedError, ValueError) as e:
-            _safe_receipt(f"❌ 启动失败：{e}", cfg, dry_run)
-            print(f"[回调] one-up 启动失败：{e}", file=sys.stderr)
-            return 3
-        _safe_receipt(f"✅ {label} 已启动，新窗口开始工作", cfg, dry_run)
-        st.last_oneup_started_window = window_key or None
-        st.pending_oneup = None
-        state_mod.save(cfg.resolved_state_path, st)
-        print(f"[回调] one-up 已启动 {label}")
-        return 0
-
-    if action == "oneup_snooze":
-        try:
-            minutes = int((payload or {}).get("minutes", 30))
-        except (TypeError, ValueError):
-            minutes = 30
-        minutes = max(5, min(minutes, 24 * 60))
-        if dry_run:
-            _safe_receipt(f"已延后 {minutes} 分钟提醒（dry-run）", cfg, True)
-            return 0
-        st.muted_until = (
-            datetime.now(timezone.utc) + timedelta(minutes=minutes)
-        ).isoformat()
-        st.pending_oneup = {
-            "provider": str((payload or {}).get("provider") or ""),
-            "window_key": str((payload or {}).get("window_key") or ""),
-        }
-        state_mod.save(cfg.resolved_state_path, st)
-        _safe_receipt(f"已延后 {minutes} 分钟提醒", cfg, dry_run)
-        return 0
-
-    if action == "oneup_mute_today":
-        if dry_run:
-            _safe_receipt("今天不再提醒 one-up（dry-run）", cfg, True)
-            return 0
-        local_now = datetime.now().astimezone()
-        tomorrow = local_now.date() + timedelta(days=1)
-        local_midnight = datetime.combine(
-            tomorrow, time.min, tzinfo=local_now.tzinfo
-        )
-        st.muted_until = local_midnight.astimezone(timezone.utc).isoformat()
-        st.pending_oneup = None
-        state_mod.save(cfg.resolved_state_path, st)
-        _safe_receipt("今天不再提醒 one-up", cfg, dry_run)
-        return 0
-
-    if action == "scheduled_warmup":
-        plan_id = str((payload or {}).get("plan_id") or "")
-        provider_name = str((payload or {}).get("provider") or "")
-        scheduled_for = str((payload or {}).get("scheduled_for") or "")
-        task = _matching_plan_task(st.active_plan, plan_id, provider_name, scheduled_for)
-        if task is None:
-            print("[回调] 定时预热与当前 active plan 不匹配，拒绝执行", file=sys.stderr)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
-        if provider_name != "codex":
-            _safe_receipt("真实预热仅允许 Codex", cfg, dry_run)
-            state_mod.save(cfg.resolved_state_path, st)
-            return 4
-        if task.get("status") == "executed":
-            print("[回调] 定时预热已执行过，跳过")
-            return 0
-        if dry_run:
-            _safe_receipt(
-                f"✅ {PROVIDER_LABEL.get(provider_name, provider_name)} 定时预热完成（dry-run）",
+        if action in ("adjust_schedule_agents", "redetect_agents"):
+            request = _request_from_payload(payload, available_count=1)
+            statuses = detect_agents()
+            push_interactive(
+                build_agent_control_card(request, statuses),
                 cfg,
-                True,
+                dry_run,
             )
-            return 0
+            st.agent_statuses = _status_snapshot(statuses)
+            return _finish(cfg, st, 0)
+
+        if action == "adjust_schedule_time":
+            request = _request_from_payload(payload, available_count=1)
+            push_interactive(build_time_card(request), cfg, dry_run)
+            return _finish(cfg, st, 0)
+
+        if action == "adopt_schedule":
+            return _adopt_schedule(payload, cfg, st, config_path, dry_run)
+
+        if action == "view_schedule":
+            if not st.active_plan:
+                _safe_receipt("当前没有生效计划", cfg, dry_run)
+            else:
+                push_active_plan_card(st.active_plan, cfg, dry_run=dry_run)
+            return _finish(cfg, st, 0)
+
+        if action == "cancel_schedule":
+            if st.active_plan and not dry_run:
+                cancel_plan_tasks(st.active_plan.get("tasks") or [])
+                st.active_plan = None
+            _safe_receipt("✅ 已取消计划，未执行任务已删除", cfg, dry_run)
+            return _finish(cfg, st, 0)
+
+        if action in ("warmup_now", "scheduled_warmup"):
+            return _warmup(payload, cfg, st, dry_run)
+
+        if action == "recovery_snooze":
+            minutes = max(1, min(int(payload.get("minutes") or 30), 24 * 60))
+            due_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+            st.pending_recovery = {
+                "provider": str(payload.get("provider") or ""),
+                "window_key": str(payload.get("window_key") or ""),
+                "due_at": due_at.isoformat(),
+            }
+            _safe_receipt(f"好，{minutes} 分钟后再提醒", cfg, dry_run)
+            return _finish(cfg, st, 0)
+
+        if action in ("recovery_skip", "tomorrow_skip", "schedule_remind_only", "skip"):
+            if action == "recovery_skip":
+                st.pending_recovery = None
+            if action == "schedule_remind_only":
+                _safe_receipt("已改为仅提醒，不会创建本地预热任务", cfg, dry_run)
+            return _finish(cfg, st, 0)
+
+        _safe_receipt("该卡片已失效，请重新打开菜单", cfg, dry_run)
+        return _finish(cfg, st, 1)
+    except NotifyError as exc:
+        print(f"[飞书发送失败] {exc}", file=sys.stderr)
+        return _finish(cfg, st, 3)
+
+
+def _handle_schedule_flow(payload, cfg, st, dry_run):
+    try:
+        validate_flow_context(payload)
+    except ValueError as exc:
+        _safe_receipt(str(exc), cfg, dry_run)
+        return _finish(cfg, st, 4)
+    step = str(payload.get("step") or "")
+    request_raw = dict(payload.get("request") or {})
+    request_raw.setdefault("target_date", payload.get("target_date"))
+
+    if step in ("edit_time_point", "edit_time_range"):
+        request_raw["time_mode"] = "point" if step.endswith("point") else "range"
         try:
+            request = parse_plan_request(request_raw, available_agent_count=1)
+        except ValueError:
+            request = PlanRequest(
+                date.fromisoformat(str(payload["target_date"])),
+                "point" if step.endswith("point") else "range",
+                "09:00",
+                "14:00" if step.endswith("point") else "17:00",
+                "auto",
+            )
+        push_interactive(build_time_card(request), cfg, dry_run)
+        return _finish(cfg, st, 0)
+
+    if step != "generate_plan":
+        _safe_receipt("该卡片已失效，请重新打开菜单", cfg, dry_run)
+        return _finish(cfg, st, 4)
+
+    form = payload.get("form_value")
+    if isinstance(form, Mapping):
+        for key in ("work_start", "work_end"):
+            if key in form:
+                request_raw[key] = form[key]
+    if payload.get("agent_strategy"):
+        request_raw["agent_strategy"] = payload["agent_strategy"]
+    statuses = detect_agents()
+    usages = {
+        provider: status.usage
+        for provider, status in statuses.items()
+        if status.schedulable and status.usage is not None
+    }
+    st.agent_statuses = _status_snapshot(statuses)
+    if not usages:
+        _safe_receipt("暂时没有可用于规划的 Agent", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    try:
+        request = parse_plan_request(
+            request_raw,
+            available_agent_count=len(usages),
+        )
+        plan = build_plan(request, usages)
+    except ValueError as exc:
+        fallback = PlanRequest(
+            date.fromisoformat(str(request_raw["target_date"])),
+            str(request_raw.get("time_mode") or "point"),
+            str(request_raw.get("work_start") or "09:00").split()[0],
+            str(request_raw.get("work_end") or "14:00").split()[0],
+            str(request_raw.get("agent_strategy") or "auto"),
+        )
+        push_interactive(build_time_card(fallback, error=str(exc)), cfg, dry_run)
+        return _finish(cfg, st, 4)
+    push_schedule_card(plan, cfg, dry_run=dry_run)
+    st.proposed_plan_id = _plan_id_from_push(plan)
+    return _finish(cfg, st, 0)
+
+
+def _adopt_schedule(payload, cfg, st, config_path, dry_run):
+    candidate = payload.get("plan")
+    if not isinstance(candidate, dict) or candidate.get("plan_version") != 3:
+        _safe_receipt("该计划已失效，请重新规划", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    if (
+        st.proposed_plan_id
+        and str(candidate.get("plan_id") or "") != st.proposed_plan_id
+    ):
+        _safe_receipt("该计划不是最新预览，请采用最新计划", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    if st.active_plan and st.active_plan.get("status") == "active":
+        _safe_receipt("已有生效计划，请先取消后再采用新计划", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    try:
+        record = validate_plan_record(candidate)
+    except PlanTaskError as exc:
+        _safe_receipt(f"❌ 计划不可采用：{exc}", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    statuses = detect_agents(tuple(record.get("agents") or ()))
+    unavailable = [
+        provider
+        for provider in record.get("agents") or []
+        if provider not in statuses or not statuses[provider].schedulable
+    ]
+    if unavailable:
+        labels = "、".join(unavailable)
+        _safe_receipt(f"❌ Agent 状态已变化，请重新生成计划：{labels}", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    try:
+        tasks = (
+            []
+            if dry_run
+            else install_plan_tasks(record, cfg, config_path=config_path)
+        )
+    except PlanTaskError as exc:
+        _safe_receipt(f"❌ 采用计划失败：{exc}", cfg, dry_run)
+        return _finish(cfg, st, 3)
+    if not dry_run:
+        record["status"] = "active"
+        record["adopted_at"] = datetime.now(timezone.utc).isoformat()
+        record["tasks"] = tasks
+        st.active_plan = record
+        st.proposed_plan_id = None
+    _safe_receipt(f"✅ 已采用计划，已创建 {len(tasks)} 个预热任务", cfg, dry_run)
+    return _finish(cfg, st, 0)
+
+
+def _warmup(payload, cfg, st, dry_run):
+    provider_name = str(payload.get("provider") or "")
+    if provider_name not in ("cc", "codex"):
+        _safe_receipt("预热 Agent 无效", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    task = None
+    if payload.get("action") == "scheduled_warmup":
+        active = st.active_plan or {}
+        if active.get("plan_id") != payload.get("plan_id"):
+            return _finish(cfg, st, 4)
+        for item in active.get("tasks") or []:
+            if (
+                item.get("provider") == provider_name
+                and item.get("scheduled_for") == payload.get("scheduled_for")
+                and item.get("status") == "pending"
+            ):
+                task = item
+                break
+        if task is None:
+            return _finish(cfg, st, 4)
+    window_key = str(payload.get("window_key") or "")
+    warmed = dict(st.last_warmed_windows or {})
+    if window_key and warmed.get(provider_name) == window_key:
+        _safe_receipt("这个窗口已经预热过了", cfg, dry_run)
+        return _finish(cfg, st, 0)
+    try:
+        if not dry_run:
             get_provider(provider_name).warmup(cfg.warmup_prompt)
-        except (ProviderError, NotImplementedError) as e:
-            _safe_receipt(f"❌ 定时预热失败：{e}", cfg, False)
-            print(f"[回调] 定时预热失败：{e}", file=sys.stderr)
-            return 3
+    except (ProviderError, NotImplementedError) as exc:
+        if task is not None:
+            task["status"] = "failed"
+            task["error"] = str(exc)[:200]
+        _safe_receipt(f"❌ {provider_name} 预热失败：{exc}", cfg, dry_run)
+        return _finish(cfg, st, 3)
+    if task is not None:
         task["status"] = "executed"
         task["executed_at"] = datetime.now(timezone.utc).isoformat()
-        state_mod.save(cfg.resolved_state_path, st)
         cancel_plan_tasks([task])
-        label = PROVIDER_LABEL.get(provider_name, provider_name)
-        _safe_receipt(f"✅ {label} 已按计划完成预热，可以接力", cfg, False)
-        print(f"[回调] {label} 定时预热完成")
-        return 0
-
-    if action != "warmup":
-        print(f"[回调] 未知 action={action!r}，忽略", file=sys.stderr)
-        state_mod.save(cfg.resolved_state_path, st)
-        return 1
-
-    # 防重复预热：同窗口已开过就不再烧 token（容差比较，resets_at 微秒会漂移）
-    if resets_at and same_window(st.last_warmed_reset_at, resets_at):
-        msg = "ℹ️ 该窗口已经开过了，不重复预热"
-        print(f"[回调] {msg}")
-        _safe_receipt(msg, cfg, dry_run)
-        state_mod.save(cfg.resolved_state_path, st)
-        return 0
-
-    provider_name = "codex"
-    print(f"[回调] 点「开」→ 用 {provider_name} 预热：{cfg.warmup_prompt!r}")
-    if dry_run:
-        # dry-run 绝不真烧 token：只模拟，不调 warmup()
-        print("[dry-run] 跳过真实 claude -p 调用")
-        _safe_receipt("✅ 已开窗，新窗口从现在起算", cfg, dry_run)
-        print("[回调] 预热完成（dry-run 模拟），已回执")
-        return 0
-    provider = get_provider(provider_name)
-    try:
-        provider.warmup(cfg.warmup_prompt)
-    except ProviderError as e:
-        err = f"❌ 开窗失败：{e}"
-        print(f"[回调] {err}", file=sys.stderr)
-        _safe_receipt(err, cfg, dry_run)
-        state_mod.save(cfg.resolved_state_path, st)
-        return 3
-
-    st.last_warmed_reset_at = resets_at
-    state_mod.save(cfg.resolved_state_path, st)
-    _safe_receipt("✅ 已开窗，新窗口从现在起算", cfg, dry_run)
-    print("[回调] 预热完成，已回执")
-    return 0
+    if window_key:
+        warmed[provider_name] = window_key
+        st.last_warmed_windows = warmed
+    _safe_receipt(
+        f"✅ {provider_name} 已预热，新的额度窗口已开始",
+        cfg,
+        dry_run,
+    )
+    return _finish(cfg, st, 0)
 
 
-def _safe_receipt(text: str, cfg, dry_run: bool) -> None:
-    """回执失败不应让整体退非零——预热本身已成功，回执是锦上添花。"""
+def _request_from_payload(payload: Mapping[str, Any], available_count: int):
+    raw = dict(payload.get("request") or {})
+    return parse_plan_request(raw, available_agent_count=available_count)
+
+
+def _target_date(payload):
+    raw = str(payload.get("target_date") or "")
+    if raw:
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            pass
+    return date.today() + timedelta(days=1)
+
+
+def _status_snapshot(statuses):
+    return {
+        provider: {
+            "state": status.state.value,
+            "detail": status.detail[:200],
+            "utilization": (
+                status.usage.five_hour.utilization if status.usage else None
+            ),
+            "reset_at": (
+                status.usage.five_hour.resets_at.isoformat()
+                if status.usage and status.usage.five_hour.resets_at
+                else None
+            ),
+        }
+        for provider, status in statuses.items()
+    }
+
+
+def _migrate_v2(st):
+    active = st.active_plan
+    if active and int(active.get("plan_version") or 0) < 3:
+        cancel_plan_tasks(active.get("tasks") or [])
+        st.active_plan = None
+
+
+def _safe_receipt(text, cfg, dry_run):
     try:
         push_receipt(text, cfg, dry_run=dry_run)
-    except NotifyError as e:
-        print(f"[回调] 回执发送失败（不影响预热结果）：{e}", file=sys.stderr)
+    except NotifyError as exc:
+        print(f"[回执失败] {exc}", file=sys.stderr)
 
 
-def _matching_plan_task(active_plan, plan_id: str, provider: str, scheduled_for: str):
-    if not active_plan or active_plan.get("status") != "active":
-        return None
-    if active_plan.get("plan_id") != plan_id:
-        return None
-    for task in active_plan.get("tasks") or []:
-        if task.get("provider") == provider and task.get("scheduled_for") == scheduled_for:
-            return task
-    return None
+def _finish(cfg, st, code):
+    state_mod.save(cfg.resolved_state_path, st)
+    return code
 
 
-def _agent_availability(agent_names):
-    available = []
-    failures = []
-    for name in agent_names:
-        label = PROVIDER_LABEL.get(name, name)
-        try:
-            get_provider(name).read_usage()
-            available.append(name)
-        except (ProviderError, NotImplementedError, ValueError) as exc:
-            failures.append(f"{label} 不可用：{exc}")
-    return tuple(available), tuple(failures)
-
-
-def _schedule_profile_key(payload: dict) -> str:
-    operator = str((payload or {}).get("_operator_open_id") or "").strip()
-    if operator:
-        return operator
-    chat = str((payload or {}).get("_chat_id") or "").strip()
-    return f"chat:{chat}" if chat else "default"
-
-
-def _schedule_profile(st, payload: dict) -> dict:
-    profiles = st.schedule_profiles or {}
-    profile = profiles.get(_schedule_profile_key(payload))
-    return dict(profile) if isinstance(profile, dict) else {}
-
-
-def _read_payload(raw: str = "") -> dict:
-    raw = raw or sys.stdin.read()
-    raw = raw.strip()
-    if not raw:
-        raise ValueError("未提供 payload（参数或 stdin 均为空）")
-    return json.loads(raw)
+def _plan_id_from_push(plan):
+    from .plan_tasks import plan_record
+    return plan_record(plan)["plan_id"]
 
 
 def main(argv=None) -> int:
-    import argparse
-
-    args_in = sys.argv[1:] if argv is None else list(argv)
-    if args_in and args_in[0].endswith(("handler", "handler.py")):
-        args_in = args_in[1:]
     parser = argparse.ArgumentParser(prog="quota-butler-handler")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
-    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("payload", nargs="?")
-    args = parser.parse_args(args_in)
-    try:
-        payload = _read_payload(args.payload or "")
-    except (ValueError, json.JSONDecodeError) as e:
-        print(f"[回调] payload 解析失败：{e}", file=sys.stderr)
-        return 2
-    return handle(payload, config_path=args.config, dry_run=args.dry_run)
+    args = parser.parse_args(argv)
+    if args.payload:
+        payload = json.loads(args.payload)
+    else:
+        payload = json.load(sys.stdin)
+    return handle(payload, config_path=args.config)
 
 
 if __name__ == "__main__":

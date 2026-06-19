@@ -8,7 +8,6 @@ import os
 import plistlib
 import subprocess
 import sys
-from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -23,30 +22,26 @@ class PlanTaskError(Exception):
 def plan_record(plan: SchedulePlan) -> Dict[str, Any]:
     core = {
         "plan_version": plan.plan_version,
-        "mode": plan.mode,
         "agents": list(plan.agents),
         "work_start": plan.work_start.isoformat(),
         "work_end": plan.work_end.isoformat(),
-        "cas": plan.cas,
-        "waiting_minutes": plan.waiting_minutes,
+        "reason": plan.reason,
         "events": [
             {
                 "agent": event.agent,
                 "kind": event.kind,
                 "at": event.at.isoformat(),
-                "note": event.note,
+                "purpose": event.purpose,
             }
             for event in plan.events
         ],
-        "preferences": asdict(plan.preferences) if plan.preferences else None,
-        "relay_count": plan.relay_count,
-        "relay_points": [
-            {
-                "at": event.at.isoformat(),
-                "note": event.note,
-            }
-            for event in plan.relay_points
-        ],
+        "request": {
+            "target_date": plan.request.target_date.isoformat(),
+            "time_mode": plan.request.time_mode,
+            "work_start": plan.request.work_start,
+            "work_end": plan.request.work_end,
+            "agent_strategy": plan.request.agent_strategy,
+        },
     }
     digest = hashlib.sha256(
         json.dumps(core, sort_keys=True, ensure_ascii=True).encode("utf-8")
@@ -58,6 +53,8 @@ def validate_plan_record(value: object) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise PlanTaskError("计划 payload 缺失")
     record = dict(value)
+    if record.get("plan_version") != 3:
+        raise PlanTaskError("该计划已失效，请重新规划")
     plan_id = str(record.get("plan_id") or "").strip()
     if not plan_id or not plan_id.replace("-", "").isalnum():
         raise PlanTaskError("plan_id 非法")
@@ -75,7 +72,7 @@ def validate_plan_record(value: object) -> Dict[str, Any]:
             raise PlanTaskError("计划事件格式非法")
         if event.get("agent") not in SUPPORTED_AGENTS:
             raise PlanTaskError(f"计划包含不支持的 Agent: {event.get('agent')!r}")
-        if event.get("kind") not in ("warmup", "recovery"):
+        if event.get("kind") != "warmup":
             raise PlanTaskError(f"计划事件类型非法: {event.get('kind')!r}")
         _parse_datetime(event.get("at"))
     return record
@@ -100,8 +97,7 @@ def install_plan_tasks(
         work_end = _parse_datetime(record["work_end"])
         future_warmups = [
             event for event in record["events"]
-            if event["kind"] in ("warmup", "recovery")
-            and event["agent"] == "codex"
+            if event["kind"] == "warmup"
             and now < _parse_datetime(event["at"]) <= work_end
         ]
         for index, event in enumerate(future_warmups):

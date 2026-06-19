@@ -1,8 +1,7 @@
-"""Poll Feishu group text commands and route them to quota-butler actions.
+"""Legacy one-shot text classifier.
 
-This is a pragmatic test router for environments where card callback bridge is
-offline. It handles text messages in the configured chat and sends normal
-Quota Butler cards back to the same chat.
+The production deployment uses the private bridge and must not run this module
+as a second listener. It remains only as an offline diagnostic helper.
 """
 
 from __future__ import annotations
@@ -77,16 +76,8 @@ def classify_intent(text: str) -> Optional[str]:
         return "plan:view"
     if "取消计划" in t:
         return "plan:cancel"
-    if "帮我安排明天" in t or "明天" in t or "tomorrow" in t:
+    if "帮我安排明天" in t or "明日计划" in t or "tomorrow" in t:
         return "schedule:帮我安排明天"
-    if "今天冲刺" in t or "冲刺" in t:
-        return "schedule:今天冲刺"
-    if "不断粮" in t:
-        return "schedule:不断粮模式"
-    if "节省" in t:
-        return "schedule:节省模式"
-    if "平衡" in t:
-        return "schedule:平衡模式"
     return None
 
 

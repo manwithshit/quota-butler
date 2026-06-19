@@ -3,36 +3,11 @@
 # 装了 PyYAML 用标准 YAML；没装也能跑（内置极简解析，仅支持本文件这种简单结构）。
 
 # launchd 拉起间隔（分钟）。仅作记录；真实间隔在 plist 里设。
-# 5h 窗口不需要太密的轮询；15 分钟足够在 reset 前命中（只要 < reset_soon_min）。
+# 15 分钟足够判断额度窗口是否刚刚恢复。
 interval_min: 15
-
-# 主规则：距 5h 窗口 reset 小于这么多分钟 → 触发提醒。
-# 联调时把它调大（如 600）即可让下一次轮询当场命中。
-reset_soon_min: 20
-
-# 可选叠加（防浪费）：利用率低于此值才提醒；留空 = 关闭。
-# waste_pct: 50
-
-# 感知用哪个 provider：cc（默认）/ codex。
-sense_provider: cc
-
-# 预热用哪个 provider：cc（默认）/ codex。
-# ⚠️ 6/15 起 CC `claude -p` 独立计费；切 codex 走订阅不计费。
-warmup_provider: cc
 
 # 预热消息内容（越短越省）。
 warmup_prompt: say hi
-
-# V2 调度器：sustain（不断粮）/ balanced（平衡）/ savings（节省）。
-scheduler_mode: balanced
-
-# 参与调度的 agent。单 Agent 可写 cc 或 codex；双 Agent 写 cc,codex。
-scheduler_agents: cc,codex
-
-# 通常连续工作多久、几点开始、几点睡觉。调度器用它生成明日计划。
-work_duration_hours: 8
-work_start: "09:00"
-sleep_time: "23:00"
 
 # 采用计划后生成的 launchd 任务文件目录。
 plan_tasks_dir: ~/.quota-butler/plan-tasks
@@ -40,8 +15,7 @@ plan_tasks_dir: ~/.quota-butler/plan-tasks
 # 静音：true 时只感知+判断，不推送（调试用）。
 muted: false
 
-# 安静时段（本地时间 HH:MM）：此区间内命中也不推送，免半夜打扰。
-# 留空 = 关闭。支持跨午夜（如 23:00–08:00）。
+# V3 固定在 23:00–08:00 不主动打扰。这里保留兼容读取，但不建议修改。
 quiet_hours:
   start: "23:00"
   end: "08:00"

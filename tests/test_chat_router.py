@@ -8,6 +8,15 @@ from quota_butler.chat_router import ChatMessage
 
 
 class TestClassifyIntent(unittest.TestCase):
+    def test_recognizes_only_v3_query_and_tomorrow_plan_intents(self):
+        self.assertEqual(chat_router.classify_intent("额度"), "query")
+        self.assertEqual(
+            chat_router.classify_intent("帮我安排明天"),
+            "schedule:帮我安排明天",
+        )
+        self.assertIsNone(chat_router.classify_intent("今天冲刺"))
+        self.assertIsNone(chat_router.classify_intent("不断粮模式"))
+
     def test_recognizes_plan_management_commands(self):
         self.assertEqual(chat_router.classify_intent("查看计划"), "plan:view")
         self.assertEqual(chat_router.classify_intent("取消计划"), "plan:cancel")
