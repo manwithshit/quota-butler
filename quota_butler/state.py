@@ -49,6 +49,8 @@ def load(path: str) -> State:
         return State()
     defaults = asdict(State())
     known = {key: data.get(key, default) for key, default in defaults.items()}
+    if known["schema_version"] is None:
+        known["schema_version"] = defaults["schema_version"]
     return State(**known)
 
 
