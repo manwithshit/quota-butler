@@ -75,7 +75,14 @@ class TestState(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "state.json")
             with open(path, "w", encoding="utf-8") as stream:
-                json.dump({"schedule_profiles": {"old": {}}, "active_plan": None}, stream)
+                json.dump(
+                    {
+                        "schema_version": None,
+                        "schedule_profiles": {"old": {}},
+                        "active_plan": None,
+                    },
+                    stream,
+                )
 
             loaded = state_mod.load(path)
             state_mod.save(path, loaded)
