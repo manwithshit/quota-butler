@@ -47,7 +47,8 @@ def load(path: str) -> State:
     except (json.JSONDecodeError, OSError):
         # 状态文件损坏不应让哨兵崩；当作空状态重新开始
         return State()
-    known = {k: data.get(k) for k in State().__dict__}
+    defaults = asdict(State())
+    known = {key: data.get(key, default) for key, default in defaults.items()}
     return State(**known)
 
 

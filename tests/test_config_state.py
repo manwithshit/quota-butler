@@ -1,6 +1,7 @@
 """S0 对应测试：config 解析（含无 PyYAML 的 fallback）+ state 读写。"""
 
 import os
+import json
 import tempfile
 import threading
 import time
@@ -69,6 +70,20 @@ class TestState(unittest.TestCase):
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")
         self.assertIsNone(st.active_plan)
+
+    def test_legacy_state_gets_v3_schema_default_and_drops_unknown_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "state.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump({"schedule_profiles": {"old": {}}, "active_plan": None}, stream)
+
+            loaded = state_mod.load(path)
+            state_mod.save(path, loaded)
+
+            self.assertEqual(loaded.schema_version, 3)
+            with open(path, encoding="utf-8") as stream:
+                saved = json.load(stream)
+            self.assertNotIn("schedule_profiles", saved)
 
     def test_locked_serializes_read_modify_write_sessions(self):
         with tempfile.TemporaryDirectory() as directory:
