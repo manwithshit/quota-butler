@@ -123,6 +123,12 @@ def _handle_locked(payload, cfg, config_path, dry_run):
         if action in ("recovery_skip", "tomorrow_skip", "schedule_remind_only", "skip"):
             if action == "recovery_skip":
                 st.pending_recovery = None
+            if action == "tomorrow_skip":
+                _safe_receipt(
+                    "好的，收到。好好休息，也是在给大脑充电 🌙",
+                    cfg,
+                    dry_run,
+                )
             if action == "schedule_remind_only":
                 _safe_receipt("已改为仅提醒，不会创建本地预热任务", cfg, dry_run)
             return _finish(cfg, st, 0)
