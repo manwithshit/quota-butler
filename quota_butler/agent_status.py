@@ -17,6 +17,7 @@ from .providers.base import ProviderError, Usage
 class AgentState(str, Enum):
     CONNECTED = "connected"
     NEEDS_LOGIN = "needs_login"
+    TOKEN_STALE = "token_stale"  # 登录有效但缓存令牌过期（可刷新，非登出）
     UNAVAILABLE = "unavailable"
     NOT_INSTALLED = "not_installed"
 
@@ -78,11 +79,16 @@ def detect_agents(
             usage = get_provider(provider).read_usage()
         except (ProviderError, NotImplementedError) as exc:
             detail = str(exc)
-            state = (
-                AgentState.NEEDS_LOGIN
-                if _looks_like_auth_error(detail)
-                else AgentState.UNAVAILABLE
-            )
+            if _looks_like_auth_error(detail):
+                # cc 已先过 login probe（loggedIn:true 才会走到这里），
+                # 此处 auth 类失败 = 缓存令牌过期可刷新，不是登出。
+                state = (
+                    AgentState.TOKEN_STALE
+                    if provider == "cc"
+                    else AgentState.NEEDS_LOGIN
+                )
+            else:
+                state = AgentState.UNAVAILABLE
             results[provider] = AgentStatus(
                 provider,
                 state,
