@@ -26,16 +26,33 @@ def usage_bar(percent: float, width: int = 10) -> str:
         return ""
     value = max(0.0, min(float(percent), 100.0))
     filled = min(width, int(math.floor(value * width / 100 + 0.5)))
+    # 极值保底：只要不是恰好 0/100，少数侧至少留 1 格——
+    # 否则 99% 看着像满、1% 看着像空，区分不出来。
+    if 0.0 < value < 100.0:
+        filled = max(1, min(width - 1, filled))
     return "█" * filled + "░" * (width - filled)
 
 
 def usage_status(percent: float) -> str:
+    """按「已用%」给状态（保留兼容；展示侧改用 remaining_status）。"""
     value = max(0.0, min(float(percent), 100.0))
     if value < 30:
         return "🟢 余量充足"
     if value < 70:
         return "🟡 正常使用"
     if value < 90:
+        return "🟠 注意消耗"
+    return "🔴 接近耗尽"
+
+
+def remaining_status(remaining: float) -> str:
+    """按「还剩%」给状态。与 Codex/Claude 原生「剩余」口径一致。"""
+    value = max(0.0, min(float(remaining), 100.0))
+    if value > 70:
+        return "🟢 余量充足"
+    if value > 30:
+        return "🟡 正常使用"
+    if value > 10:
         return "🟠 注意消耗"
     return "🔴 接近耗尽"
 
@@ -49,6 +66,7 @@ def build_status_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
         label = PROVIDER_LABEL[provider]
         if status.state == AgentState.CONNECTED and status.usage:
             five = status.usage.five_hour
+            rem5 = 100 - five.utilization
             reset = (
                 five.resets_at.astimezone().strftime("%m-%d %H:%M")
                 if five.resets_at
@@ -57,16 +75,30 @@ def build_status_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
             lines.extend(
                 [
                     f"**{label} · 5 小时窗口**",
-                    f"{usage_bar(five.utilization)} **{five.utilization:.0f}%**",
-                    f"{usage_status(five.utilization)} · 恢复：**{reset}**",
+                    f"{usage_bar(rem5)} 还剩 **{rem5:.0f}%**",
+                    f"{remaining_status(rem5)} · 恢复：**{reset}**",
                 ]
             )
+            rem7 = None
             if status.usage.seven_day:
-                seven = status.usage.seven_day
+                rem7 = 100 - status.usage.seven_day.utilization
                 lines.append(
-                    f"7 天额度：{usage_bar(seven.utilization)} "
-                    f"**{seven.utilization:.0f}%**"
+                    f"7 天额度：{usage_bar(rem7)} 还剩 **{rem7:.0f}%**"
                 )
+            # 木桶提示：周额度见底时，5 小时窗口再多也受其封顶。
+            if rem7 is not None and rem7 < 20 and rem7 < rem5:
+                lines.append(
+                    f"⚠️ 本周额度仅剩 **{rem7:.0f}%**，是真正的上限——"
+                    "5 小时窗口再充足也用不了多少。"
+                )
+        elif status.state == AgentState.TOKEN_STALE:
+            lines.extend(
+                [
+                    f"**{label}**",
+                    "🟡 **额度令牌已过期**",
+                    "登录仍有效，用一次 Claude 即可自动刷新（无需重新登录）。",
+                ]
+            )
         elif status.state == AgentState.NEEDS_LOGIN:
             instruction = (
                 "`claude auth login`"
@@ -297,46 +329,168 @@ def build_agent_control_card(
     )
 
 
-def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
-    labels = " + ".join(PROVIDER_LABEL[agent] for agent in plan.agents)
-    lines = [
-        f"**明天 {plan.work_start:%H:%M}–{plan.work_end:%H:%M}，"
-        f"优先使用 {labels}。**",
-        "",
-    ]
-    for event in plan.events:
-        lines.append(
-            f"**{event.at:%H:%M}** · {PROVIDER_LABEL[event.agent]} · {event.purpose}"
-        )
-    lines.extend(
-        [
-            "",
-            f"预计连续覆盖：**{plan.work_start:%H:%M}–{plan.work_end:%H:%M}**",
-            f"安排原因：{plan.reason}",
-        ]
+def _fmt_hours(hours: float) -> str:
+    value = round(float(hours), 1)
+    if abs(value - round(value)) < 0.05:
+        return str(int(round(value)))
+    return f"{value:.1f}"
+
+
+def _seg_weight(hours: float) -> int:
+    """把段时长缩进飞书合法的 1–5 权重区间（>5 会被退化成内容宽度）。"""
+    return max(2, min(5, int(round(float(hours)))))
+
+
+def _seg_column(weight: int, bg: Optional[str], content: str) -> Dict[str, Any]:
+    column = {
+        "tag": "column",
+        "width": "weighted",
+        "weight": weight,
+        "vertical_align": "center",
+        "padding": "7px 2px",
+        "elements": [{"tag": "markdown", "content": content, "text_align": "center"}],
+    }
+    if bg:
+        column["background_style"] = bg
+    return column
+
+
+def _row(columns, margin: str) -> Dict[str, Any]:
+    return {
+        "tag": "column_set",
+        "horizontal_spacing": "4px",
+        "margin": margin,
+        "columns": columns,
+    }
+
+
+def _schedule_timeline_elements(plan: SchedulePlan):
+    def md(content):
+        return {"tag": "markdown", "content": content, "text_align": "left"}
+
+    ws, we = plan.work_start, plan.work_end
+    work_hours = (we - ws).total_seconds() / 3600
+    first = plan.agents[0]
+    first_label = PROVIDER_LABEL[first]
+    fw = sorted(e.at for e in plan.events if e.agent == first)
+    prep_start = fw[0] if fw else ws
+    second_warm = fw[1] if len(fw) > 1 else we
+    window_count = max(1, len(fw))
+    dual = len(plan.agents) >= 2 and any(
+        e.agent == plan.agents[1] for e in plan.events
     )
-    if "cc" in plan.agents:
-        lines.extend(["", "说明：Claude Code 预热会产生一次真实请求。"])
+
+    bar = [_seg_column(1, "grey-200", "预备")]
+    axis = [_seg_column(1, None, f"{prep_start:%H:%M}\n开始计时")]
+
+    if dual:
+        relay = plan.agents[1]
+        relay_label = PROVIDER_LABEL[relay]
+        rw = sorted(e.at for e in plan.events if e.agent == relay)
+        relay_at = rw[-1]
+        pre_pin = rw[0] if len(rw) > 1 else None
+        w1_end = min(max(second_warm, ws), relay_at)
+        w1_h = (w1_end - ws).total_seconds() / 3600
+        w2_h = (relay_at - w1_end).total_seconds() / 3600
+        relay_h = (we - relay_at).total_seconds() / 3600
+        bar.append(_seg_column(_seg_weight(w1_h), "blue-200", f"{first_label} 窗口 1\n**100%**"))
+        bar.append(_seg_column(_seg_weight(w2_h), "blue-200", f"{first_label} 窗口 2\n**100%**"))
+        bar.append(_seg_column(_seg_weight(relay_h), "wathet-200", f"{relay_label}\n接力"))
+        axis.append(_seg_column(_seg_weight(w1_h), None, f"{ws:%H:%M}\n你开工"))
+        axis.append(_seg_column(_seg_weight(w2_h), None, f"{second_warm:%H:%M}\n续上额度"))
+        axis.append(_seg_column(_seg_weight(relay_h), None, f"{relay_at:%H:%M}\n{relay_label} 接力"))
+        headline = md(
+            f"**明天 {ws:%H:%M}–{we:%H:%M} 连续可用 · {first_label} 为主，{relay_label} 接力**"
+        )
+        sub = md(
+            f"先用 {first_label}；等它的额度用到交接点，{relay_label} 自动接上，"
+            "让你一整天连续用、不会中途被卡。"
+        )
+        metric = md(
+            f"📊 **前 5 小时 ≈ 200% 额度**（{first_label} 两窗）"
+            f"　·　**全程 {_fmt_hours(work_hours)} 小时连续可用**"
+        )
+        baseline = md("<font color='grey'>不安排的话：同样时间最多撑住 1～2 个窗口，中途大概率被卡。</font>")
+        phases = [
+            md(f"✅ **开工前** · {prep_start:%H:%M} 启动 {first_label}，{ws:%H:%M} 打开直接用。"),
+            md(f"🔄 **工作中** · {second_warm:%H:%M} 自动续上第二档 {first_label}。"),
+        ]
+        if pre_pin is not None:
+            phases.append(
+                md(f"➕ **接力延长** · {relay_label} 提前在 {pre_pin:%H:%M} 备好窗口，{relay_at:%H:%M} 准点接上，一直用到 {we:%H:%M}。")
+            )
+        else:
+            phases.append(
+                md(f"➕ **接力延长** · {relay_at:%H:%M} 起 {relay_label} 接上，一直用到 {we:%H:%M}。")
+            )
+    else:
+        w1_end = min(max(second_warm, ws), we)
+        w1_h = (w1_end - ws).total_seconds() / 3600
+        w2_h = (we - w1_end).total_seconds() / 3600
+        bar.append(_seg_column(_seg_weight(w1_h), "blue-200", "窗口 1\n**100%**"))
+        bar.append(_seg_column(_seg_weight(w2_h), "blue-200", "窗口 2\n**100%**"))
+        axis.append(_seg_column(_seg_weight(w1_h), None, f"{ws:%H:%M}\n你开工"))
+        axis.append(_seg_column(_seg_weight(w2_h), None, f"{second_warm:%H:%M}\n续上额度"))
+        headline = md(f"**明天 {ws:%H:%M}–{we:%H:%M} 连续可用 · {first_label}**")
+        sub = md(f"在你工作的 {_fmt_hours(work_hours)} 小时里，给你铺好 {window_count} 个满额度窗口。")
+        metric = md(
+            f"📊 **{_fmt_hours(work_hours)} 小时内可用额度 ≈ {window_count * 100}%**"
+            f"　·　相当于 {window_count} 个满窗口"
+        )
+        baseline = md(
+            f"<font color='grey'>不安排的话：同样 {_fmt_hours(work_hours)} 小时只有 1 个窗口 = 100%。</font>"
+        )
+        phases = [
+            md(f"✅ **开工前** · {prep_start:%H:%M} 替你启动一档额度，{ws:%H:%M} 打开直接用。"),
+            md(f"🔄 **工作中** · {second_warm:%H:%M} 自动续上第二档，你不用管。"),
+        ]
+
+    elements = [
+        headline,
+        sub,
+        _row(bar, "8px 0px 2px 0px"),
+        _row(axis, "0px 0px 6px 0px"),
+        metric,
+        baseline,
+        *phases,
+        md("<font color='grey'>说明：预热会各产生一次真实请求。</font>"),
+    ]
+    return elements
+
+
+def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
     record = plan_record(plan)
     request = _request_dict(plan.request)
-    return _card(
-        "额度管家：明日计划预览",
-        lines,
-        [
-            _button("采用计划", "primary", _callback("adopt_schedule", plan=record)),
-            _button(
-                "更换 AI 工具",
-                "default",
-                _callback("adjust_schedule_agents", request=request),
-            ),
-            _button(
-                "修改使用时间",
-                "default",
-                _callback("adjust_schedule_time", request=request),
-            ),
-            _button("仅提醒", "default", _callback("schedule_remind_only")),
-        ],
-    )
+    elements = _schedule_timeline_elements(plan)
+    buttons = [
+        _button("采用计划", "primary", _callback("adopt_schedule", plan=record)),
+        _button(
+            "更换 AI 工具",
+            "default",
+            _callback("adjust_schedule_agents", request=request),
+        ),
+        _button(
+            "修改使用时间",
+            "default",
+            _callback("adjust_schedule_time", request=request),
+        ),
+        _button("仅提醒", "default", _callback("schedule_remind_only")),
+    ]
+    for offset in range(0, len(buttons), 2):
+        elements.append(
+            {
+                "tag": "column_set",
+                "columns": [
+                    {"tag": "column", "elements": [button]}
+                    for button in buttons[offset:offset + 2]
+                ],
+            }
+        )
+    return {
+        "schema": "2.0",
+        "config": {"summary": {"content": "额度管家：明日计划预览"}},
+        "body": {"elements": elements},
+    }
 
 
 def build_active_plan_card(record: Mapping[str, Any]) -> Dict[str, Any]:

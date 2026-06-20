@@ -68,14 +68,21 @@ def build_plan(
     ]
 
     if len(selected) == 2:
+        relay_agent = selected[1]
         relay_at = max(start + timedelta(hours=5) - timedelta(minutes=10), start)
         if relay_at < end:
+            # 垫窗：在交接点往前推 5 小时先给接力 Agent 预热一次，
+            # 让它的额度窗口刚好在交接点（relay_at）准点刷新，无缝顶上。
+            pre_pin_at = relay_at - timedelta(hours=5)
             events.append(
-                PlanEvent(selected[1], "warmup", relay_at, "为长时间工作准备接力窗口")
+                PlanEvent(relay_agent, "warmup", pre_pin_at, "提前垫好接力窗口")
+            )
+            events.append(
+                PlanEvent(relay_agent, "warmup", relay_at, "接力刷新，无缝顶上")
             )
         reason = (
             f"前半段优先保持 {AGENT_LABELS[first_agent]} 连续工作，"
-            f"后半段由 {AGENT_LABELS[selected[1]]} 接力。"
+            f"后半段由 {AGENT_LABELS[relay_agent]} 接力。"
         )
     else:
         reason = (

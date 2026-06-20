@@ -47,12 +47,19 @@ class TestStatusCard(unittest.TestCase):
         self.assertEqual(usage_bar(63), "██████░░░░")
         self.assertEqual(usage_bar(100), "██████████")
 
-    def test_status_card_distinguishes_all_agent_states(self):
+    def test_progress_bar_keeps_minority_side_visible(self):
+        # 0/100 仍然纯色；只要中间值就给少数侧保底 1 格。
+        self.assertEqual(usage_bar(0), "░░░░░░░░░░")
+        self.assertEqual(usage_bar(100), "██████████")
+        self.assertEqual(usage_bar(99), "█████████░")  # 不再像满
+        self.assertEqual(usage_bar(1), "█░░░░░░░░░")   # 不再像空
+
+    def test_status_card_shows_remaining_and_distinguishes_states(self):
         statuses = {
             "cc": AgentStatus(
                 "cc",
                 AgentState.CONNECTED,
-                usage=_usage("cc", 63),
+                usage=_usage("cc", 63),  # 已用 63% → 还剩 37%
             ),
             "codex": AgentStatus(
                 "codex",
@@ -65,10 +72,37 @@ class TestStatusCard(unittest.TestCase):
         text = _markdown(build_status_card(statuses))
 
         self.assertIn("Claude Code", text)
-        self.assertIn("██████░░░░ **63%**", text)
+        self.assertIn("████░░░░░░ 还剩 **37%**", text)
         self.assertIn("Codex", text)
         self.assertIn("暂时无法读取", text)
         self.assertNotIn("未检测到安装", text)
+
+    def test_status_card_warns_when_weekly_quota_caps_five_hour(self):
+        usage = Usage(
+            "codex",
+            WindowUsage(1.0, datetime(2026, 6, 20, 18, 0, tzinfo=timezone.utc), 5 * 3600),
+            WindowUsage(99.0, datetime(2026, 6, 25, tzinfo=timezone.utc), 7 * 86400),
+        )
+        statuses = {"codex": AgentStatus("codex", AgentState.CONNECTED, usage=usage)}
+
+        text = _markdown(build_status_card(statuses))
+
+        self.assertIn("5 小时窗口", text)
+        self.assertIn("还剩 **99%**", text)   # 5h 余量
+        self.assertIn("还剩 **1%**", text)     # 周额度
+        self.assertIn("本周额度仅剩", text)     # 木桶警告
+        self.assertIn("真正的上限", text)
+
+    def test_token_stale_does_not_tell_logged_in_user_to_relogin(self):
+        statuses = {
+            "cc": AgentStatus("cc", AgentState.TOKEN_STALE, detail="CC token 已过期"),
+        }
+
+        text = _markdown(build_status_card(statuses))
+
+        self.assertIn("额度令牌已过期", text)
+        self.assertIn("无需重新登录", text)
+        self.assertNotIn("claude auth login", text)
 
 
 class TestPlanningCards(unittest.TestCase):
@@ -113,17 +147,27 @@ class TestPlanningCards(unittest.TestCase):
             ["work_start", "work_end"],
         )
 
-    def test_plan_card_shows_exact_warmups_and_adjustment_buttons(self):
+    def test_plan_card_renders_timeline_value_prop_and_buttons(self):
         card = build_schedule_card(self.plan)
         text = _markdown(card)
+        whole = str(card)
         actions = [value["action"] for value in _callbacks(card)]
 
+        # 结果承诺 + 中文动词标注 + 200% 卖点
         self.assertIn("09:00–14:00", text)
         self.assertIn("06:30", text)
         self.assertIn("11:30", text)
-        self.assertIn("准备第一个窗口", text)
-        self.assertIn("恢复后准备第二个窗口", text)
-        self.assertIn("预计连续覆盖：**09:00–14:00**", text)
+        self.assertIn("开始计时", whole)
+        self.assertIn("续上额度", whole)
+        self.assertIn("200%", text)
+        self.assertIn("满窗口", text)
+        # 彩色比例条用 -200 浅色档 + 加权列宽
+        self.assertIn("blue-200", whole)
+        self.assertIn("grey-200", whole)
+        self.assertIn("weighted", whole)
+        # 旧技术风文案已从可见区移除（event.purpose 仍在回调 payload 里，属内部数据）
+        self.assertNotIn("准备第一个窗口", text)
+        self.assertNotIn("预计连续覆盖", text)
         self.assertNotIn("CAS", text)
         self.assertEqual(
             actions,
@@ -134,8 +178,25 @@ class TestPlanningCards(unittest.TestCase):
                 "schedule_remind_only",
             ],
         )
-        self.assertIn("更换 AI 工具", str(card))
-        self.assertNotIn("调整 Agent", str(card))
+        self.assertIn("更换 AI 工具", whole)
+        self.assertNotIn("调整 Agent", whole)
+
+    def test_dual_agent_plan_card_shows_relay_and_codex_prewarm(self):
+        request = PlanRequest(date(2026, 6, 20), "range", "09:00", "18:00", "both")
+        plan = build_plan(
+            request,
+            {"cc": _usage("cc", 20), "codex": _usage("codex", 30)},
+        )
+        codex_events = [e for e in plan.events if e.agent == "codex"]
+        card = build_schedule_card(plan)
+        whole = str(card)
+
+        self.assertEqual(plan.agents, ("cc", "codex"))
+        self.assertEqual(len(codex_events), 2)     # P2: 垫窗 + 接力 两个 Codex 任务
+        self.assertIn("接力", whole)
+        self.assertIn("wathet-200", whole)         # Codex 段换色
+        self.assertIn("备好窗口", whole)            # P2: Codex 提前垫窗显式表达
+        self.assertIn("连续可用", whole)            # 双模型讲时长
 
     def test_dual_agent_control_exposes_three_explicit_tool_choices(self):
         card = build_agent_control_card(

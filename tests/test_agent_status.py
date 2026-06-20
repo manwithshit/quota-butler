@@ -31,18 +31,32 @@ class TestAgentStatus(unittest.TestCase):
     @mock.patch("quota_butler.agent_status.probe_agent_login", return_value=None)
     @mock.patch("quota_butler.agent_status.get_provider")
     @mock.patch("quota_butler.agent_status.find_agent_executable")
-    def test_auth_error_is_needs_login_not_not_installed(
+    def test_cc_auth_error_after_login_probe_is_token_stale(
         self, find_executable, get_provider, probe
     ):
+        # cc 已过 login probe（probe=None=loggedIn:true），此处 auth 失败
+        # = 缓存令牌过期可刷新，不是登出，更不是未安装。
         find_executable.return_value = "/usr/local/bin/claude"
         get_provider.return_value.read_usage.side_effect = ProviderError(
-            "oauth/usage 返回 401：token 失效"
+            "CC token 已过期（MVP1 不自动刷新）"
         )
 
         status = detect_agents(("cc",))["cc"]
 
+        self.assertEqual(status.state, AgentState.TOKEN_STALE)
+        self.assertNotEqual(status.state, AgentState.NOT_INSTALLED)
+
+    @mock.patch("quota_butler.agent_status.get_provider")
+    @mock.patch("quota_butler.agent_status.find_agent_executable")
+    def test_codex_auth_error_is_needs_login(self, find_executable, get_provider):
+        find_executable.return_value = "/usr/local/bin/codex"
+        get_provider.return_value.read_usage.side_effect = ProviderError(
+            "wham/usage 返回 401：Codex token 失效"
+        )
+
+        status = detect_agents(("codex",))["codex"]
+
         self.assertEqual(status.state, AgentState.NEEDS_LOGIN)
-        self.assertIn("401", status.detail)
 
     @mock.patch("quota_butler.agent_status.get_provider")
     @mock.patch("quota_butler.agent_status.probe_agent_login")
