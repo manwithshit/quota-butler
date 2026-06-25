@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Mapping
 
@@ -52,6 +53,7 @@ def handle(
 
 
 def _handle_locked(payload, cfg, config_path, dry_run):
+    reply_cfg = _reply_config(cfg, payload)
     st = state_mod.load(cfg.resolved_state_path)
     _migrate_v2(st)
     action = str((payload or {}).get("action") or "")
@@ -61,24 +63,24 @@ def _handle_locked(payload, cfg, config_path, dry_run):
     try:
         if action == "query_status":
             statuses = detect_agents()
-            push_status_card(statuses, cfg, dry_run=dry_run)
+            push_status_card(statuses, reply_cfg, dry_run=dry_run)
             st.agent_statuses = _status_snapshot(statuses)
             return _finish(cfg, st, 0)
 
         if action == "schedule_intent":
             target = _target_date(payload)
-            push_interactive(build_time_mode_card(target), cfg, dry_run)
+            push_interactive(build_time_mode_card(target), reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
         if action == "schedule_flow":
-            return _handle_schedule_flow(payload, cfg, st, dry_run)
+            return _handle_schedule_flow(payload, reply_cfg, st, dry_run)
 
         if action in ("adjust_schedule_agents", "redetect_agents"):
             request = _request_from_payload(payload, available_count=1)
             statuses = detect_agents()
             push_interactive(
                 build_agent_control_card(request, statuses),
-                cfg,
+                reply_cfg,
                 dry_run,
             )
             st.agent_statuses = _status_snapshot(statuses)
@@ -86,28 +88,28 @@ def _handle_locked(payload, cfg, config_path, dry_run):
 
         if action == "adjust_schedule_time":
             request = _request_from_payload(payload, available_count=1)
-            push_interactive(build_time_card(request), cfg, dry_run)
+            push_interactive(build_time_card(request), reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
         if action == "adopt_schedule":
-            return _adopt_schedule(payload, cfg, st, config_path, dry_run)
+            return _adopt_schedule(payload, reply_cfg, st, config_path, dry_run)
 
         if action == "view_schedule":
             if not st.active_plan:
-                _safe_receipt("当前没有生效计划", cfg, dry_run)
+                _safe_receipt("当前没有生效计划", reply_cfg, dry_run)
             else:
-                push_active_plan_card(st.active_plan, cfg, dry_run=dry_run)
+                push_active_plan_card(st.active_plan, reply_cfg, dry_run=dry_run)
             return _finish(cfg, st, 0)
 
         if action == "cancel_schedule":
             if st.active_plan and not dry_run:
                 cancel_plan_tasks(st.active_plan.get("tasks") or [])
                 st.active_plan = None
-            _safe_receipt("✅ 已取消计划，未执行任务已删除", cfg, dry_run)
+            _safe_receipt("✅ 已取消计划，未执行任务已删除", reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
         if action in ("warmup_now", "scheduled_warmup"):
-            return _warmup(payload, cfg, st, dry_run)
+            return _warmup(payload, reply_cfg, st, dry_run)
 
         if action == "recovery_snooze":
             minutes = max(1, min(int(payload.get("minutes") or 30), 24 * 60))
@@ -117,7 +119,7 @@ def _handle_locked(payload, cfg, config_path, dry_run):
                 "window_key": str(payload.get("window_key") or ""),
                 "due_at": due_at.isoformat(),
             }
-            _safe_receipt(f"好，{minutes} 分钟后再提醒", cfg, dry_run)
+            _safe_receipt(f"好，{minutes} 分钟后再提醒", reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
         if action in ("recovery_skip", "tomorrow_skip", "schedule_remind_only", "skip"):
@@ -126,14 +128,14 @@ def _handle_locked(payload, cfg, config_path, dry_run):
             if action == "tomorrow_skip":
                 _safe_receipt(
                     "好的，收到。好好休息，也是在给大脑充电 🌙",
-                    cfg,
+                    reply_cfg,
                     dry_run,
                 )
             if action == "schedule_remind_only":
-                _safe_receipt("已改为仅提醒，不会创建本地预热任务", cfg, dry_run)
+                _safe_receipt("已改为仅提醒，不会创建本地预热任务", reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
-        _safe_receipt("该卡片已失效，请重新打开菜单", cfg, dry_run)
+        _safe_receipt("该卡片已失效，请重新打开菜单", reply_cfg, dry_run)
         return _finish(cfg, st, 1)
     except NotifyError as exc:
         print(f"[飞书发送失败] {exc}", file=sys.stderr)
@@ -307,6 +309,13 @@ def _warmup(payload, cfg, st, dry_run):
 def _request_from_payload(payload: Mapping[str, Any], available_count: int):
     raw = dict(payload.get("request") or {})
     return parse_plan_request(raw, available_agent_count=available_count)
+
+
+def _reply_config(cfg, payload: Mapping[str, Any]):
+    chat_id = str(payload.get("_chat_id") or payload.get("chat_id") or "").strip()
+    if not chat_id:
+        return cfg
+    return replace(cfg, feishu=replace(cfg.feishu, chat_id=chat_id, user_id=""))
 
 
 def _target_date(payload):
