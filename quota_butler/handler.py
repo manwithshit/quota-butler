@@ -57,6 +57,7 @@ def _handle_locked(payload, cfg, config_path, dry_run):
     reply_cfg = _reply_config(cfg, payload)
     st = state_mod.load(cfg.resolved_state_path)
     _migrate_v2(st)
+    _remember_notification_target(st, payload)
     action = str((payload or {}).get("action") or "")
     st.last_action = action
     st.last_run_at = datetime.now(timezone.utc).isoformat()
@@ -352,6 +353,26 @@ def _reply_config(cfg, payload: Mapping[str, Any]):
         cfg,
         feishu=replace(cfg.feishu, chat_id=chat_id, user_id="", message_id=""),
     )
+
+
+def _remember_notification_target(st, payload: Mapping[str, Any]) -> None:
+    chat_type = str(
+        payload.get("_chat_type")
+        or payload.get("chat_type")
+        or payload.get("_chat_mode")
+        or payload.get("chat_mode")
+        or ""
+    ).strip().lower()
+    if chat_type != "p2p":
+        return
+    chat_id = str(payload.get("_chat_id") or payload.get("chat_id") or "").strip()
+    if not chat_id:
+        return
+    st.notification_target = {
+        "chat_id": chat_id,
+        "chat_type": "p2p",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _target_date(payload):

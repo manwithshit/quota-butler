@@ -60,12 +60,14 @@ class TestState(unittest.TestCase):
                 active_plan={"plan_id": "plan-1", "status": "active"},
                 last_warmed_windows={"cc": "cc:w1"},
                 last_bedtime_prompt_date="2026-06-19",
+                notification_target={"chat_id": "oc_p2p", "chat_type": "p2p"},
             )
             state_mod.save(path, st)
             loaded = state_mod.load(path)
             self.assertEqual(loaded.active_plan["plan_id"], "plan-1")
             self.assertEqual(loaded.last_warmed_windows["cc"], "cc:w1")
             self.assertEqual(loaded.last_bedtime_prompt_date, "2026-06-19")
+            self.assertEqual(loaded.notification_target["chat_id"], "oc_p2p")
 
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")

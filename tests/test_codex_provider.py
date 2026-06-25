@@ -5,6 +5,7 @@
 
 import json
 import os
+import socket
 import tempfile
 import unittest
 import urllib.error
@@ -148,6 +149,14 @@ class TestCodexRead(unittest.TestCase):
             with self.assertRaises(ProviderError) as ctx:
                 CodexProvider().read_usage()
         self.assertIn("不存在", str(ctx.exception))
+
+    @mock.patch("quota_butler.providers.codex.urllib.request.urlopen")
+    def test_socket_timeout_is_provider_error(self, urlopen):
+        urlopen.side_effect = socket.timeout("read timed out")
+        with mock.patch("quota_butler.providers.codex.AUTH_PATH", self.auth):
+            with self.assertRaises(ProviderError) as ctx:
+                CodexProvider().read_usage()
+        self.assertIn("网络错误", str(ctx.exception))
 
     @mock.patch("quota_butler.providers.codex.subprocess.run")
     def test_warmup_success(self, run):

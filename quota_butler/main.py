@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from . import config as config_mod
@@ -56,7 +57,7 @@ def _run_locked(cfg, *, dry_run, now):
             provider = recovered[0][0] if recovered else ""
             push_interactive(
                 build_bedtime_card(statuses, recovered_provider=provider),
-                cfg,
+                _notification_config(cfg, st),
                 dry_run,
             )
             if not dry_run:
@@ -67,7 +68,7 @@ def _run_locked(cfg, *, dry_run, now):
             for provider, window_key in recovered:
                 push_interactive(
                     build_recovery_card(provider, window_key),
-                    cfg,
+                    _notification_config(cfg, st),
                     dry_run,
                 )
             if not dry_run:
@@ -123,6 +124,8 @@ def _newly_recovered(statuses, st, now):
         age = now.astimezone(reset_at.tzinfo) - reset_at
         if age < timedelta(0) or age > RECOVERY_FRESHNESS:
             continue
+        if _is_quiet(reset_at.astimezone()):
+            continue
         if status.usage.five_hour.utilization > 5:
             continue
         window_key = f"{provider}:{reset_at.isoformat()}"
@@ -137,6 +140,21 @@ def _mark_recoveries(st, recovered):
     for provider, window_key in recovered:
         notified[provider] = window_key
     st.last_recovery_notified_windows = notified
+
+
+def _notification_config(cfg, st):
+    if cfg.feishu.message_id or cfg.feishu.chat_id or cfg.feishu.user_id:
+        return cfg
+    target = st.notification_target or {}
+    if target.get("chat_type") != "p2p":
+        return cfg
+    chat_id = str(target.get("chat_id") or "").strip()
+    if not chat_id:
+        return cfg
+    return replace(
+        cfg,
+        feishu=replace(cfg.feishu, chat_id=chat_id, user_id="", message_id=""),
+    )
 
 
 def _due_snoozed_recovery(st, now):

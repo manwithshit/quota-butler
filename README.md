@@ -21,7 +21,7 @@ V3 只做三件事：
 - 工作时间与采用的 AI 工具
 - 每次预热的具体时间
 - 第一个窗口、第二个窗口或双工具接力的目的
-- 采用计划、更换 AI 工具、修改使用时间、仅提醒
+- 采用计划、更换 AI 工具、修改使用时间
 
 ## 安全边界
 
@@ -48,6 +48,8 @@ V3 只做三件事：
 - `~/.lark-channel/config.json`：当前 Feishu/Lark bridge profile。
 - `~/.lark-channel/profiles/codex/`：`codex` profile 的 bridge 日志、lark-cli 投影配置与本机加密 secret。
 
+主动提醒只绑定独立机器人私聊。第一次在私聊里发送 `额度` 或点击菜单后，系统会把该私聊会话记录到 `~/.quota-butler/state.json`，后续恢复提醒和睡前卡都发到这个私聊；群聊不会被记录为主动提醒目标。
+
 ```bash
 mkdir -p ~/.quota-butler
 cp config.example.yaml ~/.quota-butler/config.yaml
@@ -68,8 +70,8 @@ launchctl list | grep com.quota-butler
 
 主任务每隔 `interval_min` 分钟检查一次额度，并在每天 22:00 精确唤醒一次。卡片按钮和文字入口由现有私人 bridge fork 承接，不需要、也不应启动第二个飞书 listener。
 
-安装脚本默认复用 `~/.lark-channel/profiles/codex/lark-cli`，确保 launchd 主动提醒与当前 bridge 使用同一机器人身份。
+安装脚本默认复用 `~/.lark-channel/profiles/codex/lark-cli`，确保 launchd 主动提醒与当前 bridge 使用同一机器人身份。`~/.quota-butler/config.yaml` 里的 `feishu.chat_id` / `feishu.user_id` 建议保持为空，让私聊绑定结果作为唯一主动提醒目标。
 
-如果要从旧群切到新的独立机器人，更新的是本机 bridge profile 和加密 keystore，不是仓库代码；App Secret 只能留在本机加密存储里，不应写入 README、YAML、日志或 commit。
+如果要切到新的独立机器人，更新的是本机 bridge profile 和加密 keystore，不是仓库代码；App Secret 只能留在本机加密存储里，不应写入 README、YAML、日志或 commit。
 
 私人 bridge 配置与验收见 [docs/BRIDGE_SETUP.md](docs/BRIDGE_SETUP.md)。
