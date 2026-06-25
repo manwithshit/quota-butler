@@ -18,6 +18,7 @@ from .notify import (
     build_time_card,
     build_time_mode_card,
     push_active_plan_card,
+    push_command_menu_card,
     push_interactive,
     push_receipt,
     push_schedule_card,
@@ -65,6 +66,10 @@ def _handle_locked(payload, cfg, config_path, dry_run):
             statuses = detect_agents()
             push_status_card(statuses, reply_cfg, dry_run=dry_run)
             st.agent_statuses = _status_snapshot(statuses)
+            return _finish(cfg, st, 0)
+
+        if action in ("menu", "command_menu"):
+            push_command_menu_card(reply_cfg, dry_run=dry_run)
             return _finish(cfg, st, 0)
 
         if action == "schedule_intent":

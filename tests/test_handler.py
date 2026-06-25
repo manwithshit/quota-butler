@@ -370,6 +370,23 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(cfg.feishu.user_id, "")
         self.assertEqual(cfg.feishu.message_id, "om_direct")
 
+    @mock.patch("quota_butler.handler.push_command_menu_card")
+    def test_menu_replies_to_source_message(self, push):
+        rc = handler.handle(
+            {
+                "action": "menu",
+                "_chat_id": "oc_direct",
+                "_message_id": "om_direct",
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        cfg = push.call_args.args[0]
+        self.assertEqual(cfg.feishu.chat_id, "")
+        self.assertEqual(cfg.feishu.user_id, "")
+        self.assertEqual(cfg.feishu.message_id, "om_direct")
+
     @mock.patch("quota_butler.handler.push_status_card")
     @mock.patch("quota_butler.handler.detect_agents")
     def test_query_replies_to_operator_when_bridge_provides_open_id(
