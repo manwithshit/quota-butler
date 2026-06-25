@@ -32,15 +32,15 @@ python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
 
 ## 切换机器人
 
-如果废弃旧群、改用独立机器人，优先切换 `~/.lark-channel` 里的 `codex` profile：
+如果改用独立机器人，优先切换 `~/.lark-channel` 里的 `codex` profile：
 
 1. 将新 App Secret 写入 bridge 的加密 keystore。
 2. 将 bridge 根配置和 `lark-cli` 投影配置里的 App ID 同步到新机器人。
-3. 清空 `~/.quota-butler/config.yaml` 里的旧 `feishu.chat_id` / `feishu.user_id`，避免定时任务继续推旧群。
+3. 清空 `~/.quota-butler/config.yaml` 里的 `feishu.chat_id` / `feishu.user_id`，让私聊自动绑定成为唯一主动提醒目标。
 4. 重启 `ai.lark-channel-bridge.bot.codex` 与 `com.quota-butler` 两个 launchd 服务。
 5. 查看 bridge 日志，确认 `connected` 事件显示的是新机器人名称。
 
-文字触发的 `额度` 会优先回复 bridge 传入的来源消息 `_message_id`，避免私聊场景里 `chat_id` / `open_id` 被飞书判定为跨 App 或机器人不在会话。主动定时提醒仍需要明确的 `chat_id` 或当前 App 下有效的 `user_id`，确认目标前建议保持为空。
+文字触发的 `额度` 会优先回复 bridge 传入的来源消息 `_message_id`，避免私聊场景里 `chat_id` / `open_id` 被飞书判定为跨 App 或机器人不在会话。bridge 也会把会话类型传给额度管家：只有 `_chat_type = p2p` 的独立机器人私聊会被记录为 `notification_target`，主动恢复提醒和睡前卡会复用这个私聊目标；群聊、话题和其他会话类型不会成为主动提醒目标。
 
 ## 正式入口
 
@@ -78,20 +78,21 @@ bridge 直接识别以下精确文字，不经过 Claude/Codex 对话：
 - `recovery_snooze`
 - `scheduled_warmup`
 
-bridge 会使用已验证的操作者和会话覆盖 `_operator_open_id`、`_chat_id`，并把 CardKit 的 `form_value` 转发给 handler。
+bridge 会使用已验证的操作者和会话覆盖 `_operator_open_id`、`_chat_id`、`_chat_type`，并把 CardKit 的 `form_value` 转发给 handler。
 
 ## 手动验收
 
 1. 在飞书发送“额度”，确认收到 Claude Code / Codex 状态卡。
-2. 在飞书发送“菜单”，确认收到菜单卡。
-3. 发送任意非支持文本，例如“明日计划”，确认只收到固定提示。
-4. 打开菜单，点击“明日计划”。
-5. 选择“从某时开始”，将时间设为 09:00。
-6. 确认预览卡明确展示每次预热时间，例如 06:30 和 11:30。
-7. 点击“调整时间”，改为 12:00；确认所有节点重新计算，例如 09:30 和 14:30。
-8. 两个工具都可用时点击“更换 AI 工具”，确认只有 Claude Code、Codex、两个都用三个选择。
-7. 只检测到一个工具时，确认不显示无意义选择器，只显示当前工具与“重新检测”。
-8. 点击“采用计划”，确认独立 launchd 任务被创建。
-9. 点击“查看当前计划”，确认待执行节点可见；再点击“取消计划”清理任务。
+2. 检查 `~/.quota-butler/state.json`，确认 `notification_target.chat_type` 为 `p2p`。
+3. 在飞书发送“菜单”，确认收到菜单卡。
+4. 发送任意非支持文本，例如“明日计划”，确认只收到固定提示。
+5. 打开菜单，点击“明日计划”。
+6. 选择“从某时开始”，将时间设为 09:00。
+7. 确认预览卡明确展示每次预热时间，例如 06:30 和 11:30。
+8. 点击“调整时间”，改为 12:00；确认所有节点重新计算，例如 09:30 和 14:30。
+9. 两个工具都可用时点击“更换 AI 工具”，确认只有 Claude Code、Codex、两个都用三个选择。
+10. 只检测到一个工具时，确认不显示无意义选择器，只显示当前工具与“重新检测”。
+11. 点击“采用计划”，确认独立 launchd 任务被创建。
+12. 点击“查看当前计划”，确认待执行节点可见；再点击“取消计划”清理任务。
 
 真实预热只应在用户点击“立即预热”或明确采用计划后执行。

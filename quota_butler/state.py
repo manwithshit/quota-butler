@@ -7,7 +7,8 @@
   last_notified_reset_at 上次「已推送提醒」对应的 resets_at —— 推送去重的关键
   last_warmed_reset_at   上次「已点开预热」对应的 resets_at —— 防重复预热
   last_action            上次回调动作（warmup / skip），便于日志追溯
-  last_chat_message_id   上次群聊文字命令处理到的 message_id
+  last_chat_message_id   上次离线诊断路由处理到的 message_id
+  notification_target    主动提醒目标；只允许记录独立机器人私聊
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ class State:
     proposed_plan_id: Optional[str] = None
     last_recovery_notified_windows: Optional[Dict[str, str]] = None
     pending_recovery: Optional[Dict[str, str]] = None
+    notification_target: Optional[Dict[str, str]] = None
 
 
 def load(path: str) -> State:

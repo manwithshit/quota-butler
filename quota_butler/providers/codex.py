@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import time
 import urllib.error
@@ -117,6 +118,8 @@ class CodexProvider(Provider):
             raise ProviderError(f"wham/usage HTTP {e.code}") from e
         except urllib.error.URLError as e:
             raise ProviderError(f"wham/usage 网络错误: {e.reason}") from e
+        except (TimeoutError, socket.timeout, OSError) as e:
+            raise ProviderError(f"wham/usage 网络错误: {e}") from e
         try:
             return json.loads(body)
         except json.JSONDecodeError as e:

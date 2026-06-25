@@ -6,6 +6,7 @@
 """
 
 import json
+import socket
 import unittest
 import urllib.error
 from datetime import datetime, timezone
@@ -84,6 +85,15 @@ class TestFetchAndParse(unittest.TestCase):
         urlopen.side_effect = urllib.error.URLError("connection refused")
         with self.assertRaises(ProviderError):
             ClaudeProvider().read_usage()
+
+    @mock.patch("quota_butler.providers.claude.urllib.request.urlopen")
+    @mock.patch("quota_butler.providers.claude.subprocess.run")
+    def test_socket_timeout_is_provider_error(self, run, urlopen):
+        run.return_value = _kc(stdout=_good_creds())
+        urlopen.side_effect = socket.timeout("read timed out")
+        with self.assertRaises(ProviderError) as ctx:
+            ClaudeProvider().read_usage()
+        self.assertIn("网络错误", str(ctx.exception))
 
     @mock.patch("quota_butler.providers.claude.urllib.request.urlopen")
     @mock.patch("quota_butler.providers.claude.subprocess.run")

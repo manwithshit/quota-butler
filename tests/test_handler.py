@@ -417,6 +417,46 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(cfg.feishu.user_id, "")
         self.assertEqual(cfg.feishu.message_id, "om_direct")
 
+    @mock.patch("quota_butler.handler.push_status_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_p2p_quota_command_binds_notification_target(self, detect, push):
+        detect.return_value = {"codex": _connected("codex")}
+
+        rc = handler.handle(
+            {
+                "action": "query_status",
+                "_chat_id": "oc_p2p",
+                "_chat_type": "p2p",
+                "_message_id": "om_direct",
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        from quota_butler import state as state_mod
+        target = state_mod.load(self.state_path).notification_target
+        self.assertEqual(target["chat_id"], "oc_p2p")
+        self.assertEqual(target["chat_type"], "p2p")
+
+    @mock.patch("quota_butler.handler.push_status_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_group_quota_command_does_not_bind_notification_target(self, detect, push):
+        detect.return_value = {"codex": _connected("codex")}
+
+        rc = handler.handle(
+            {
+                "action": "query_status",
+                "_chat_id": "oc_group",
+                "_chat_type": "group",
+                "_message_id": "om_group",
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        from quota_butler import state as state_mod
+        self.assertIsNone(state_mod.load(self.state_path).notification_target)
+
     @mock.patch("quota_butler.handler.push_command_menu_card")
     def test_menu_replies_to_source_message(self, push):
         rc = handler.handle(

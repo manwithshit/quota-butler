@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import subprocess
 import urllib.error
 import urllib.request
@@ -92,6 +93,8 @@ class ClaudeProvider(Provider):
             raise ProviderError(f"oauth/usage HTTP {e.code}") from e
         except urllib.error.URLError as e:
             raise ProviderError(f"oauth/usage 网络错误: {e.reason}") from e
+        except (TimeoutError, socket.timeout, OSError) as e:
+            raise ProviderError(f"oauth/usage 网络错误: {e}") from e
         try:
             return json.loads(body)
         except json.JSONDecodeError as e:
