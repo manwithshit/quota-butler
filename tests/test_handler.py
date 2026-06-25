@@ -61,7 +61,7 @@ class TestHandler(unittest.TestCase):
         self.config_path, self.state_path = _config_file()
 
     @mock.patch("quota_butler.handler.push_interactive")
-    def test_schedule_intent_starts_with_time_mode_not_v2_questions(self, push):
+    def test_schedule_intent_opens_point_time_picker_directly(self, push):
         rc = handler.handle(
             {"action": "schedule_intent", "intent": "tomorrow"},
             config_path=self.config_path,
@@ -70,8 +70,27 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(rc, 0)
         card = push.call_args.args[0]
         self.assertIn("重度使用时间", str(card))
+        self.assertIn("选择开始时间", str(card))
+        self.assertIn("generate_plan", str(card))
+        self.assertNotIn("指定时间区间", str(card))
         self.assertNotIn("task_type", str(card))
         self.assertNotIn("intensity", str(card))
+
+    @mock.patch("quota_butler.handler.push_interactive")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_manual_warmup_opens_tool_picker(self, detect, push):
+        detect.return_value = {"cc": _connected("cc")}
+
+        rc = handler.handle(
+            {"action": "manual_warmup"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        card = push.call_args.args[0]
+        self.assertIn("选择要立即预热", str(card))
+        self.assertIn("warmup_now", str(card))
+        self.assertIn("Claude Code", str(card))
 
     @mock.patch("quota_butler.handler.push_interactive")
     def test_time_mode_opens_native_point_picker(self, push):

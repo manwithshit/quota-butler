@@ -182,6 +182,34 @@ def build_recovery_card(provider: str, window_key: str) -> Dict[str, Any]:
     )
 
 
+def build_manual_warmup_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
+    lines = [
+        "**选择要立即预热的 AI 工具**",
+        "点击后会立刻发起一次真实请求。",
+    ]
+    buttons = []
+    for provider in ("cc", "codex"):
+        status = statuses.get(provider)
+        label = PROVIDER_LABEL[provider]
+        if status and status.plan_eligible:
+            callback = _callback("warmup_now", provider=provider)
+            if status.usage and status.usage.five_hour.resets_at:
+                callback["window_key"] = (
+                    f"manual:{provider}:{status.usage.five_hour.resets_at.isoformat()}"
+                )
+            buttons.append(_button(label, "primary" if not buttons else "default", callback))
+        elif status and status.state == AgentState.NEEDS_LOGIN:
+            lines.append(f"{label}：需要重新登录")
+        elif status and status.state == AgentState.CONNECTED:
+            lines.append(f"{label}：当前额度不适合预热")
+        else:
+            lines.append(f"{label}：暂不可用")
+    if not buttons:
+        lines.append("")
+        lines.append("暂时没有可预热的工具。")
+    return _card("额度管家：手动预热", lines, buttons)
+
+
 def build_bedtime_card(
     statuses: Optional[Mapping[str, AgentStatus]] = None,
     recovered_provider: str = "",
@@ -504,6 +532,7 @@ def build_command_menu_card() -> Dict[str, Any]:
         ["**想做什么？**"],
         [
             _button("当前额度", "primary", _callback("query_status")),
+            _button("手动预热", "default", _callback("manual_warmup")),
             _button("明日计划", "default", _callback("schedule_intent", intent="tomorrow")),
             _button("查看当前计划", "default", _callback("view_schedule")),
         ],
