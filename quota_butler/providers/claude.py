@@ -26,6 +26,7 @@ USER_AGENT = "quota-butler/0.1"
 HTTP_TIMEOUT = 15
 
 _WINDOW_SECONDS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
+_WINDOW_KIND = {"five_hour": "five_hour", "seven_day": "weekly"}
 
 
 class ClaudeProvider(Provider):
@@ -113,6 +114,7 @@ class ClaudeProvider(Provider):
                 utilization=float(node["utilization"]),
                 resets_at=_parse_dt(node.get("resets_at")),
                 window_seconds=_WINDOW_SECONDS.get(key),
+                kind=_WINDOW_KIND.get(key, ""),
             )
         except (KeyError, ValueError, TypeError) as e:
             if required:
@@ -124,7 +126,8 @@ class ClaudeProvider(Provider):
     def warmup(self, prompt: str) -> str:
         """`claude -p "<prompt>"` 发一条极短消息开窗。
 
-        ⚠️ 6/15 起 CC `claude -p` 独立计费——这是产品已知并接受的选择。
+        说明：Anthropic 曾公告 `claude -p` 计费调整，但 2026-06-15 暂停生效；
+        这里仍保守地把它当成一次真实 Claude Code 请求。
         """
         try:
             out = subprocess.run(

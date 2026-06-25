@@ -136,6 +136,7 @@ class CodexProvider(Provider):
             return None
         try:
             win = node.get("limit_window_seconds")
+            window_seconds = int(win) if win is not None else None
             reset_at = node.get("reset_at")
             return WindowUsage(
                 utilization=float(node["used_percent"]),
@@ -144,7 +145,8 @@ class CodexProvider(Provider):
                     if reset_at is not None
                     else None
                 ),
-                window_seconds=int(win) if win is not None else None,
+                window_seconds=window_seconds,
+                kind=_window_kind(window_seconds),
             )
         except (KeyError, ValueError, TypeError) as e:
             raise ProviderError(f"Codex 窗口字段解析失败: {e}") from e
@@ -167,3 +169,13 @@ class CodexProvider(Provider):
         if out.returncode != 0:
             raise ProviderError(f"codex exec 退出码 {out.returncode}: {out.stderr.strip()[:200]}")
         return out.stdout.strip()[:200]
+
+
+def _window_kind(seconds: Optional[int]) -> str:
+    if seconds == 5 * 3600:
+        return "five_hour"
+    if seconds == 7 * 86400:
+        return "weekly"
+    if seconds and 28 * 86400 <= seconds <= 31 * 86400:
+        return "monthly"
+    return "unknown"

@@ -90,8 +90,28 @@ class TestStatusCard(unittest.TestCase):
         self.assertIn("5 小时窗口", text)
         self.assertIn("还剩 **99%**", text)   # 5h 余量
         self.assertIn("还剩 **1%**", text)     # 周额度
+        self.assertIn("7 天额度", text)
+        self.assertIn("刷新：**", text)
         self.assertIn("本周额度仅剩", text)     # 木桶警告
         self.assertIn("真正的上限", text)
+
+    def test_status_card_labels_codex_free_monthly_window(self):
+        usage = Usage(
+            "codex",
+            WindowUsage(
+                100.0,
+                datetime(2026, 7, 1, 9, 30, tzinfo=timezone.utc),
+                30 * 86400,
+            ),
+        )
+        statuses = {"codex": AgentStatus("codex", AgentState.CONNECTED, usage=usage)}
+
+        text = _markdown(build_status_card(statuses))
+
+        self.assertIn("Codex", text)
+        self.assertIn("月度额度", text)
+        self.assertIn("刷新：**", text)
+        self.assertNotIn("Codex · 5 小时窗口", text)
 
     def test_token_stale_does_not_tell_logged_in_user_to_relogin(self):
         statuses = {

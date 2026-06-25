@@ -24,12 +24,12 @@ def _config_file():
     return config_path, state_path
 
 
-def _connected(provider):
+def _connected(provider, window_seconds=5 * 3600, kind="five_hour"):
     return AgentStatus(
         provider,
         AgentState.CONNECTED,
         executable=f"/usr/local/bin/{provider}",
-        usage=Usage(provider, WindowUsage(20, None, 5 * 3600)),
+        usage=Usage(provider, WindowUsage(20, None, window_seconds, kind)),
     )
 
 
@@ -100,6 +100,28 @@ class TestHandler(unittest.TestCase):
             [event.at.strftime("%H:%M") for event in plan.events],
             ["09:30", "14:30"],
         )
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_generate_plan_rejects_queryable_monthly_window(self, detect, receipt):
+        detect.return_value = {
+            "codex": _connected("codex", 30 * 86400, "monthly"),
+        }
+
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": FLOW_VERSION,
+                "step": "generate_plan",
+                "target_date": _request()["target_date"],
+                "request": _request(),
+                "form_value": {"work_start": "12:00"},
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 4)
+        self.assertIn("暂时没有可用于规划", receipt.call_args.args[0])
 
     @mock.patch("quota_butler.handler.push_interactive")
     @mock.patch("quota_butler.handler.detect_agents")

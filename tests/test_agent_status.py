@@ -17,6 +17,24 @@ class TestAgentStatus(unittest.TestCase):
 
         self.assertEqual(status.state, AgentState.CONNECTED)
         self.assertEqual(status.usage, usage)
+        self.assertTrue(status.queryable)
+        self.assertTrue(status.plan_eligible)
+
+    @mock.patch("quota_butler.agent_status.get_provider")
+    @mock.patch("quota_butler.agent_status.find_agent_executable")
+    def test_monthly_window_is_queryable_but_not_plan_eligible(
+        self, find_executable, get_provider
+    ):
+        find_executable.return_value = "/usr/local/bin/codex"
+        usage = Usage("codex", WindowUsage(42, None, 30 * 86400, "monthly"))
+        get_provider.return_value.read_usage.return_value = usage
+
+        status = detect_agents(("codex",))["codex"]
+
+        self.assertEqual(status.state, AgentState.CONNECTED)
+        self.assertTrue(status.queryable)
+        self.assertFalse(status.plan_eligible)
+        self.assertFalse(status.schedulable)
 
     @mock.patch("quota_butler.agent_status.get_provider")
     @mock.patch("quota_butler.agent_status.find_agent_executable")

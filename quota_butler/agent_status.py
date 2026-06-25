@@ -31,8 +31,19 @@ class AgentStatus:
     detail: str = ""
 
     @property
-    def schedulable(self) -> bool:
+    def queryable(self) -> bool:
         return self.state == AgentState.CONNECTED and self.usage is not None
+
+    @property
+    def plan_eligible(self) -> bool:
+        if not self.queryable:
+            return False
+        window = self.usage.five_hour
+        return window.kind == "five_hour" or window.window_seconds == 5 * 3600
+
+    @property
+    def schedulable(self) -> bool:
+        return self.plan_eligible
 
 
 def find_agent_executable(provider: str) -> Optional[str]:

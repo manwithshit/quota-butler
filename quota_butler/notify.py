@@ -57,6 +57,42 @@ def remaining_status(remaining: float) -> str:
     return "🔴 接近耗尽"
 
 
+def _format_reset(window) -> str:
+    if window.resets_at:
+        return window.resets_at.astimezone().strftime("%m-%d %H:%M")
+    return "暂无"
+
+
+def _window_label(window) -> str:
+    if window.kind == "five_hour":
+        return "5 小时窗口"
+    if window.kind == "weekly":
+        return "7 天额度"
+    if window.kind == "monthly":
+        return "月度额度"
+    seconds = window.window_seconds
+    if seconds == 5 * 3600:
+        return "5 小时窗口"
+    if seconds == 7 * 86400:
+        return "7 天额度"
+    if seconds and 28 * 86400 <= seconds <= 31 * 86400:
+        return "月度额度"
+    if seconds and seconds % 86400 == 0:
+        return f"{seconds // 86400} 天额度"
+    if seconds and seconds % 3600 == 0:
+        return f"{seconds // 3600} 小时窗口"
+    return "额度窗口"
+
+
+def _window_lines(window):
+    remaining = 100 - window.utilization
+    return [
+        f"**{_window_label(window)}**",
+        f"{usage_bar(remaining)} 还剩 **{remaining:.0f}%**",
+        f"刷新：**{_format_reset(window)}**",
+    ]
+
+
 def build_status_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
     lines = ["**当前额度**", ""]
     for provider in ("cc", "codex"):
@@ -67,24 +103,14 @@ def build_status_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
         if status.state == AgentState.CONNECTED and status.usage:
             five = status.usage.five_hour
             rem5 = 100 - five.utilization
-            reset = (
-                five.resets_at.astimezone().strftime("%m-%d %H:%M")
-                if five.resets_at
-                else "暂无"
-            )
             lines.extend(
-                [
-                    f"**{label} · 5 小时窗口**",
-                    f"{usage_bar(rem5)} 还剩 **{rem5:.0f}%**",
-                    f"{remaining_status(rem5)} · 恢复：**{reset}**",
-                ]
+                [f"**{label}**", f"状态：{remaining_status(rem5)}", "", *_window_lines(five)]
             )
             rem7 = None
             if status.usage.seven_day:
-                rem7 = 100 - status.usage.seven_day.utilization
-                lines.append(
-                    f"7 天额度：{usage_bar(rem7)} 还剩 **{rem7:.0f}%**"
-                )
+                secondary = status.usage.seven_day
+                rem7 = 100 - secondary.utilization
+                lines.extend(["", *_window_lines(secondary)])
             # 木桶提示：周额度见底时，5 小时窗口再多也受其封顶。
             if rem7 is not None and rem7 < 20 and rem7 < rem5:
                 lines.append(

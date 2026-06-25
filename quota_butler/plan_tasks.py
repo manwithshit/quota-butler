@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -161,7 +162,8 @@ def _install_event(
             "Hour": at.hour,
             "Minute": at.minute,
         },
-        "WorkingDirectory": os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "WorkingDirectory": _repo_root(),
+        "EnvironmentVariables": _task_environment(config_path),
         "StandardOutPath": os.path.join(task_dir, f"{label}.log"),
         "StandardErrorPath": os.path.join(task_dir, f"{label}.err.log"),
     }
@@ -205,3 +207,52 @@ def _parse_datetime(value: object) -> datetime:
 
 def _local_timezone():
     return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _repo_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _task_environment(config_path: str) -> Dict[str, str]:
+    return {
+        "PATH": _launchd_path(),
+        "LARK_CHANNEL": os.environ.get("LARK_CHANNEL", "1"),
+        "LARKSUITE_CLI_CONFIG_DIR": os.path.expanduser(
+            os.environ.get(
+                "LARKSUITE_CLI_CONFIG_DIR",
+                "~/.lark-channel/profiles/codex/lark-cli",
+            )
+        ),
+        "QUOTA_BUTLER_ROOT": _repo_root(),
+        "QUOTA_BUTLER_PYTHON": sys.executable,
+        "QUOTA_BUTLER_CONFIG": os.path.abspath(os.path.expanduser(config_path)),
+    }
+
+
+def _launchd_path() -> str:
+    directories = [
+        os.path.dirname(sys.executable),
+        *(os.path.dirname(path) for path in _which_all("lark-cli", "claude", "codex")),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    current = os.environ.get("PATH", "")
+    directories.extend(path for path in current.split(os.pathsep) if path)
+    seen = set()
+    unique = []
+    for directory in directories:
+        if directory and directory not in seen:
+            seen.add(directory)
+            unique.append(directory)
+    return os.pathsep.join(unique)
+
+
+def _which_all(*commands: str) -> List[str]:
+    paths = []
+    for command in commands:
+        found = shutil.which(command)
+        if found:
+            paths.append(found)
+    return paths
