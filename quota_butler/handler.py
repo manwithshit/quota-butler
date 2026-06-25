@@ -15,8 +15,8 @@ from .agent_status import detect_agents
 from .notify import (
     NotifyError,
     build_agent_control_card,
+    build_manual_warmup_card,
     build_time_card,
-    build_time_mode_card,
     push_active_plan_card,
     push_command_menu_card,
     push_interactive,
@@ -73,9 +73,19 @@ def _handle_locked(payload, cfg, config_path, dry_run):
             push_command_menu_card(reply_cfg, dry_run=dry_run)
             return _finish(cfg, st, 0)
 
+        if action == "manual_warmup":
+            statuses = detect_agents()
+            push_interactive(build_manual_warmup_card(statuses), reply_cfg, dry_run)
+            st.agent_statuses = _status_snapshot(statuses)
+            return _finish(cfg, st, 0)
+
         if action == "schedule_intent":
             target = _target_date(payload)
-            push_interactive(build_time_mode_card(target), reply_cfg, dry_run)
+            push_interactive(
+                build_time_card(PlanRequest(target, "point", "09:00", "14:00", "auto")),
+                reply_cfg,
+                dry_run,
+            )
             return _finish(cfg, st, 0)
 
         if action == "schedule_flow":

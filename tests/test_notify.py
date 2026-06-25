@@ -7,6 +7,7 @@ from quota_butler.notify import (
     build_agent_control_card,
     build_bedtime_card,
     build_command_menu_card,
+    build_manual_warmup_card,
     build_recovery_card,
     build_schedule_card,
     build_time_card,
@@ -274,10 +275,35 @@ class TestReminderAndMenuCards(unittest.TestCase):
         self.assertIn("明天有重度使用 AI 的计划吗", text)
         self.assertEqual(actions, ["schedule_intent", "tomorrow_skip"])
 
-    def test_menu_only_keeps_three_v3_entries(self):
+    def test_menu_includes_manual_warmup_and_plan_entries(self):
         card = build_command_menu_card()
         actions = [value["action"] for value in _callbacks(card)]
-        self.assertEqual(actions, ["query_status", "schedule_intent", "view_schedule"])
+        self.assertEqual(
+            actions,
+            ["query_status", "manual_warmup", "schedule_intent", "view_schedule"],
+        )
+
+    def test_manual_warmup_card_only_exposes_eligible_agents(self):
+        card = build_manual_warmup_card(
+            {
+                "cc": AgentStatus("cc", AgentState.CONNECTED, usage=_usage("cc", 20)),
+                "codex": AgentStatus(
+                    "codex",
+                    AgentState.CONNECTED,
+                    usage=Usage(
+                        "codex",
+                        WindowUsage(20, None, 5 * 3600, "five_hour"),
+                        WindowUsage(100, None, 7 * 86400, "weekly"),
+                    ),
+                ),
+            }
+        )
+        text = _markdown(card)
+        callbacks = _callbacks(card)
+
+        self.assertIn("选择要立即预热", text)
+        self.assertEqual([value["provider"] for value in callbacks], ["cc"])
+        self.assertEqual(callbacks[0]["action"], "warmup_now")
 
     def test_all_callbacks_use_private_quota_command(self):
         cards = [
@@ -289,6 +315,7 @@ class TestReminderAndMenuCards(unittest.TestCase):
                 {"cc": _usage("cc", 20)},
             )),
             build_command_menu_card(),
+            build_manual_warmup_card({"cc": AgentStatus("cc", AgentState.CONNECTED, usage=_usage("cc", 20))}),
         ]
         self.assertTrue(
             all(value.get("cmd") == "quota" for card in cards for value in _callbacks(card))
