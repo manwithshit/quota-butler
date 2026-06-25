@@ -24,12 +24,25 @@ def _config_file():
     return config_path, state_path
 
 
-def _connected(provider, window_seconds=5 * 3600, kind="five_hour"):
+def _connected(
+    provider,
+    window_seconds=5 * 3600,
+    kind="five_hour",
+    weekly_utilization=None,
+):
+    weekly = None
+    if weekly_utilization is not None:
+        weekly = WindowUsage(
+            weekly_utilization,
+            None,
+            7 * 24 * 3600,
+            "weekly",
+        )
     return AgentStatus(
         provider,
         AgentState.CONNECTED,
         executable=f"/usr/local/bin/{provider}",
-        usage=Usage(provider, WindowUsage(20, None, window_seconds, kind)),
+        usage=Usage(provider, WindowUsage(20, None, window_seconds, kind), weekly),
     )
 
 
@@ -100,6 +113,30 @@ class TestHandler(unittest.TestCase):
             [event.at.strftime("%H:%M") for event in plan.events],
             ["09:30", "14:30"],
         )
+
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_generate_plan_excludes_weekly_exhausted_agent(self, detect, push):
+        detect.return_value = {
+            "cc": _connected("cc", weekly_utilization=100),
+            "codex": _connected("codex", weekly_utilization=20),
+        }
+
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": FLOW_VERSION,
+                "step": "generate_plan",
+                "target_date": _request()["target_date"],
+                "request": _request(),
+                "form_value": {"work_start": "09:00"},
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        plan = push.call_args.args[0]
+        self.assertEqual(plan.agents, ("codex",))
 
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.detect_agents")
@@ -315,6 +352,16 @@ class TestHandler(unittest.TestCase):
         )
         from quota_butler import state as state_mod
         self.assertIsNone(state_mod.load(self.state_path).active_plan)
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_remind_only_old_callback_is_rejected(self, receipt):
+        rc = handler.handle(
+            {"action": "schedule_remind_only"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertIn("未上线", receipt.call_args.args[0])
 
     @mock.patch("quota_butler.handler.push_status_card")
     @mock.patch("quota_butler.handler.detect_agents")

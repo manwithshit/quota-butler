@@ -36,6 +36,27 @@ class TestAgentStatus(unittest.TestCase):
         self.assertFalse(status.plan_eligible)
         self.assertFalse(status.schedulable)
 
+    @mock.patch("quota_butler.agent_status.probe_agent_login", return_value=None)
+    @mock.patch("quota_butler.agent_status.get_provider")
+    @mock.patch("quota_butler.agent_status.find_agent_executable")
+    def test_weekly_exhausted_agent_is_queryable_but_not_schedulable(
+        self, find_executable, get_provider, probe
+    ):
+        find_executable.return_value = "/usr/local/bin/claude"
+        usage = Usage(
+            "cc",
+            WindowUsage(20, None, 5 * 3600, "five_hour"),
+            WindowUsage(100, None, 7 * 24 * 3600, "weekly"),
+        )
+        get_provider.return_value.read_usage.return_value = usage
+
+        status = detect_agents(("cc",))["cc"]
+
+        self.assertEqual(status.state, AgentState.CONNECTED)
+        self.assertTrue(status.queryable)
+        self.assertFalse(status.plan_eligible)
+        self.assertFalse(status.schedulable)
+
     @mock.patch("quota_butler.agent_status.get_provider")
     @mock.patch("quota_butler.agent_status.find_agent_executable")
     def test_missing_executable_is_not_installed(self, find_executable, get_provider):

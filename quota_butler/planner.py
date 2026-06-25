@@ -145,11 +145,21 @@ def _rank_agents(
         sorted(
             agents,
             key=lambda agent: (
+                _weekly_utilization(usages[agent]),
                 usages[agent].five_hour.utilization,
                 SUPPORTED_AGENTS.index(agent),
             ),
         )
     )
+
+
+def _weekly_utilization(usage: Usage) -> float:
+    weekly = usage.seven_day
+    if weekly and (
+        weekly.kind == "weekly" or weekly.window_seconds == 7 * 24 * 3600
+    ):
+        return weekly.utilization
+    return 0.0
 
 
 def _real_reset_in_range(
