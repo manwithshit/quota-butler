@@ -52,6 +52,15 @@ bridge 直接识别以下精确文字，不经过 Claude/Codex 对话：
 
 三者统一调用 `query_status`。
 
+独立机器人模式下，普通文字不再进入通用 Codex 对话：
+
+- `状态` / `status` 也调用 `query_status`
+- `菜单` / `帮助` / `menu` / `help` 调用 `menu`
+- `明日计划` / `帮我安排明天` / `tomorrow` 调用 `schedule_intent`
+- `查看计划` / `当前计划` 调用 `view_schedule`
+- `取消计划` 调用 `cancel_schedule`
+- 其他无法识别的普通文字兜底返回菜单卡
+
 卡片 callback 使用：
 
 ```json
