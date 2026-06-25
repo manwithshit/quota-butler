@@ -647,16 +647,20 @@ def _hhmm(value: Any) -> str:
 
 def _send(msg_type: str, content_json: str, config: Config) -> str:
     target = []
-    if config.feishu.chat_id:
+    command_name = "+messages-send"
+    if config.feishu.message_id:
+        command_name = "+messages-reply"
+        target = ["--message-id", config.feishu.message_id]
+    elif config.feishu.chat_id:
         target = ["--chat-id", config.feishu.chat_id]
     elif config.feishu.user_id:
         target = ["--user-id", config.feishu.user_id]
     else:
-        raise NotifyError("config.feishu 未配置 chat_id / user_id")
+        raise NotifyError("config.feishu 未配置 message_id / chat_id / user_id")
     command = [
         "lark-cli",
         "im",
-        "+messages-send",
+        command_name,
         "--as",
         "bot",
         *target,

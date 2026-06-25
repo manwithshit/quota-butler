@@ -40,7 +40,7 @@ python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
 4. 重启 `ai.lark-channel-bridge.bot.codex` 与 `com.quota-butler` 两个 launchd 服务。
 5. 查看 bridge 日志，确认 `connected` 事件显示的是新机器人名称。
 
-文字触发的 `额度` 会优先回复 bridge 传入的来源会话 `_chat_id`，所以私聊机器人测试不依赖配置里的固定群 ID。主动定时提醒仍需要明确的 `chat_id` 或当前 App 下有效的 `user_id`，确认目标前建议保持为空。
+文字触发的 `额度` 会优先回复 bridge 传入的来源消息 `_message_id`，避免私聊场景里 `chat_id` / `open_id` 被飞书判定为跨 App 或机器人不在会话。主动定时提醒仍需要明确的 `chat_id` 或当前 App 下有效的 `user_id`，确认目标前建议保持为空。
 
 ## 正式入口
 
