@@ -345,6 +345,52 @@ class TestHandler(unittest.TestCase):
         cfg = push.call_args.args[1]
         self.assertEqual(cfg.feishu.chat_id, "oc_direct")
         self.assertEqual(cfg.feishu.user_id, "")
+        self.assertEqual(cfg.feishu.message_id, "")
+
+    @mock.patch("quota_butler.handler.push_status_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_query_replies_to_source_message_when_bridge_provides_message_id(
+        self, detect, push
+    ):
+        detect.return_value = {"codex": _connected("codex")}
+
+        rc = handler.handle(
+            {
+                "action": "query_status",
+                "_chat_id": "oc_direct",
+                "_operator_open_id": "ou_direct",
+                "_message_id": "om_direct",
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        cfg = push.call_args.args[1]
+        self.assertEqual(cfg.feishu.chat_id, "")
+        self.assertEqual(cfg.feishu.user_id, "")
+        self.assertEqual(cfg.feishu.message_id, "om_direct")
+
+    @mock.patch("quota_butler.handler.push_status_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_query_replies_to_operator_when_bridge_provides_open_id(
+        self, detect, push
+    ):
+        detect.return_value = {"codex": _connected("codex")}
+
+        rc = handler.handle(
+            {
+                "action": "query_status",
+                "_chat_id": "oc_direct",
+                "_operator_open_id": "ou_direct",
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        cfg = push.call_args.args[1]
+        self.assertEqual(cfg.feishu.chat_id, "")
+        self.assertEqual(cfg.feishu.user_id, "ou_direct")
+        self.assertEqual(cfg.feishu.message_id, "")
 
 
 if __name__ == "__main__":

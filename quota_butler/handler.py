@@ -312,10 +312,39 @@ def _request_from_payload(payload: Mapping[str, Any], available_count: int):
 
 
 def _reply_config(cfg, payload: Mapping[str, Any]):
+    message_id = str(
+        payload.get("_message_id") or payload.get("message_id") or ""
+    ).strip()
+    if message_id:
+        return replace(
+            cfg,
+            feishu=replace(
+                cfg.feishu,
+                chat_id="",
+                user_id="",
+                message_id=message_id,
+            ),
+        )
+    operator_open_id = str(
+        payload.get("_operator_open_id") or payload.get("operator_open_id") or ""
+    ).strip()
+    if operator_open_id:
+        return replace(
+            cfg,
+            feishu=replace(
+                cfg.feishu,
+                chat_id="",
+                user_id=operator_open_id,
+                message_id="",
+            ),
+        )
     chat_id = str(payload.get("_chat_id") or payload.get("chat_id") or "").strip()
     if not chat_id:
         return cfg
-    return replace(cfg, feishu=replace(cfg.feishu, chat_id=chat_id, user_id=""))
+    return replace(
+        cfg,
+        feishu=replace(cfg.feishu, chat_id=chat_id, user_id="", message_id=""),
+    )
 
 
 def _target_date(payload):

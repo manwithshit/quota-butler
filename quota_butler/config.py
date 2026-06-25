@@ -27,6 +27,7 @@ DEFAULTS: Dict[str, Any] = {
 class FeishuConfig:
     chat_id: str = ""          # 目标群 / 会话 chat_id（oc_...）
     user_id: str = ""          # 可选：私聊目标 ou_...
+    message_id: str = ""       # 可选：回复原始消息 om_...
 
 
 @dataclass
@@ -95,6 +96,7 @@ def from_dict(data: Dict[str, Any]) -> Config:
     cfg.feishu = FeishuConfig(
         chat_id=str(feishu_raw.get("chat_id", "")),
         user_id=str(feishu_raw.get("user_id", "")),
+        message_id=str(feishu_raw.get("message_id", "")),
     )
     cfg.quiet_hours = QuietHours(
         start=str(quiet_raw.get("start", "") or ""),
