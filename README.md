@@ -35,6 +35,19 @@ V3 只做三件事：
 
 ## 本地开发
 
+当前实现代码放在：
+
+```text
+/Users/earonwong/重要但不同步icloud/02_项目/胡思乱想的项目/quota-butler
+```
+
+本机运行状态与配置不进仓库：
+
+- `~/.quota-butler/config.yaml`：额度管家运行配置、主动推送目标。
+- `~/.quota-butler/state.json`：额度窗口、计划任务与提醒状态。
+- `~/.lark-channel/config.json`：当前 Feishu/Lark bridge profile。
+- `~/.lark-channel/profiles/codex/`：`codex` profile 的 bridge 日志、lark-cli 投影配置与本机加密 secret。
+
 ```bash
 mkdir -p ~/.quota-butler
 cp config.example.yaml ~/.quota-butler/config.yaml
@@ -56,5 +69,7 @@ launchctl list | grep com.quota-butler
 主任务每隔 `interval_min` 分钟检查一次额度，并在每天 22:00 精确唤醒一次。卡片按钮和文字入口由现有私人 bridge fork 承接，不需要、也不应启动第二个飞书 listener。
 
 安装脚本默认复用 `~/.lark-channel/profiles/codex/lark-cli`，确保 launchd 主动提醒与当前 bridge 使用同一机器人身份。
+
+如果要从旧群切到新的独立机器人，更新的是本机 bridge profile 和加密 keystore，不是仓库代码；App Secret 只能留在本机加密存储里，不应写入 README、YAML、日志或 commit。
 
 私人 bridge 配置与验收见 [docs/BRIDGE_SETUP.md](docs/BRIDGE_SETUP.md)。

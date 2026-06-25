@@ -20,6 +20,28 @@ python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
 
 不要把 App Secret、access token 或 OAuth token 写入仓库、日志或聊天。
 
+## 本机路径
+
+- 项目代码：`/Users/earonwong/重要但不同步icloud/02_项目/胡思乱想的项目/quota-butler`
+- 额度管家配置：`~/.quota-butler/config.yaml`
+- 额度管家状态：`~/.quota-butler/state.json`
+- bridge 根配置：`~/.lark-channel/config.json`
+- `codex` bridge profile：`~/.lark-channel/profiles/codex/`
+- bridge 日志：`~/.lark-channel/profiles/codex/logs/`
+- launchd 定时日志：项目目录下的 `quota-butler.log` 与 `quota-butler.err.log`
+
+## 切换机器人
+
+如果废弃旧群、改用独立机器人，优先切换 `~/.lark-channel` 里的 `codex` profile：
+
+1. 将新 App Secret 写入 bridge 的加密 keystore。
+2. 将 bridge 根配置和 `lark-cli` 投影配置里的 App ID 同步到新机器人。
+3. 清空 `~/.quota-butler/config.yaml` 里的旧 `feishu.chat_id` / `feishu.user_id`，避免定时任务继续推旧群。
+4. 重启 `ai.lark-channel-bridge.bot.codex` 与 `com.quota-butler` 两个 launchd 服务。
+5. 查看 bridge 日志，确认 `connected` 事件显示的是新机器人名称。
+
+文字触发的 `额度` 会优先回复 bridge 传入的来源会话 `_chat_id`，所以私聊机器人测试不依赖配置里的固定群 ID。主动定时提醒仍需要明确的 `chat_id` 或当前 App 下有效的 `user_id`，确认目标前建议保持为空。
+
 ## 正式入口
 
 bridge 直接识别以下精确文字，不经过 Claude/Codex 对话：
