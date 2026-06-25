@@ -355,13 +355,6 @@ def build_agent_control_card(
     )
 
 
-def _fmt_hours(hours: float) -> str:
-    value = round(float(hours), 1)
-    if abs(value - round(value)) < 0.05:
-        return str(int(round(value)))
-    return f"{value:.1f}"
-
-
 def _seg_weight(hours: float) -> int:
     """把段时长缩进飞书合法的 1–5 权重区间（>5 会被退化成内容宽度）。"""
     return max(2, min(5, int(round(float(hours)))))
@@ -395,91 +388,46 @@ def _schedule_timeline_elements(plan: SchedulePlan):
         return {"tag": "markdown", "content": content, "text_align": "left"}
 
     ws, we = plan.work_start, plan.work_end
-    work_hours = (we - ws).total_seconds() / 3600
     first = plan.agents[0]
     first_label = PROVIDER_LABEL[first]
     fw = sorted(e.at for e in plan.events if e.agent == first)
     prep_start = fw[0] if fw else ws
     second_warm = fw[1] if len(fw) > 1 else we
-    window_count = max(1, len(fw))
     dual = len(plan.agents) >= 2 and any(
         e.agent == plan.agents[1] for e in plan.events
     )
 
-    bar = [_seg_column(1, "grey-200", "预备")]
-    axis = [_seg_column(1, None, f"{prep_start:%H:%M}\n开始计时")]
+    timeline = [_seg_column(1, "grey-200", f"{prep_start:%H:%M}\n预热")]
 
     if dual:
         relay = plan.agents[1]
         relay_label = PROVIDER_LABEL[relay]
         rw = sorted(e.at for e in plan.events if e.agent == relay)
         relay_at = rw[-1]
-        pre_pin = rw[0] if len(rw) > 1 else None
         w1_end = min(max(second_warm, ws), relay_at)
         w1_h = (w1_end - ws).total_seconds() / 3600
         w2_h = (relay_at - w1_end).total_seconds() / 3600
         relay_h = (we - relay_at).total_seconds() / 3600
-        bar.append(_seg_column(_seg_weight(w1_h), "blue-200", f"{first_label} 窗口 1\n**100%**"))
-        bar.append(_seg_column(_seg_weight(w2_h), "blue-200", f"{first_label} 窗口 2\n**100%**"))
-        bar.append(_seg_column(_seg_weight(relay_h), "wathet-200", f"{relay_label}\n接力"))
-        axis.append(_seg_column(_seg_weight(w1_h), None, f"{ws:%H:%M}\n你开工"))
-        axis.append(_seg_column(_seg_weight(w2_h), None, f"{second_warm:%H:%M}\n续上额度"))
-        axis.append(_seg_column(_seg_weight(relay_h), None, f"{relay_at:%H:%M}\n{relay_label} 接力"))
+        timeline.append(_seg_column(_seg_weight(w1_h), "blue-200", f"{ws:%H:%M}\n开工"))
+        timeline.append(_seg_column(_seg_weight(w2_h), "blue-200", f"{second_warm:%H:%M}\n续上"))
+        timeline.append(_seg_column(_seg_weight(relay_h), "wathet-200", f"{relay_at:%H:%M}\n{relay_label}"))
         headline = md(
-            f"**明天 {ws:%H:%M}–{we:%H:%M} 连续可用 · {first_label} 为主，{relay_label} 接力**"
+            f"**明天 {ws:%H:%M}–{we:%H:%M}：{first_label} 为主，{relay_label} 接力**"
         )
-        sub = md(
-            f"先用 {first_label}；等它的额度用到交接点，{relay_label} 自动接上，"
-            "让你一整天连续用、不会中途被卡。"
-        )
-        metric = md(
-            f"📊 **前 5 小时 ≈ 200% 额度**（{first_label} 两窗）"
-            f"　·　**全程 {_fmt_hours(work_hours)} 小时连续可用**"
-        )
-        baseline = md("<font color='grey'>不安排的话：同样时间最多撑住 1～2 个窗口，中途大概率被卡。</font>")
-        phases = [
-            md(f"✅ **开工前** · {prep_start:%H:%M} 启动 {first_label}，{ws:%H:%M} 打开直接用。"),
-            md(f"🔄 **工作中** · {second_warm:%H:%M} 自动续上第二档 {first_label}。"),
-        ]
-        if pre_pin is not None:
-            phases.append(
-                md(f"➕ **接力延长** · {relay_label} 提前在 {pre_pin:%H:%M} 备好窗口，{relay_at:%H:%M} 准点接上，一直用到 {we:%H:%M}。")
-            )
-        else:
-            phases.append(
-                md(f"➕ **接力延长** · {relay_at:%H:%M} 起 {relay_label} 接上，一直用到 {we:%H:%M}。")
-            )
+        note = md(f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。")
     else:
         w1_end = min(max(second_warm, ws), we)
         w1_h = (w1_end - ws).total_seconds() / 3600
         w2_h = (we - w1_end).total_seconds() / 3600
-        bar.append(_seg_column(_seg_weight(w1_h), "blue-200", "窗口 1\n**100%**"))
-        bar.append(_seg_column(_seg_weight(w2_h), "blue-200", "窗口 2\n**100%**"))
-        axis.append(_seg_column(_seg_weight(w1_h), None, f"{ws:%H:%M}\n你开工"))
-        axis.append(_seg_column(_seg_weight(w2_h), None, f"{second_warm:%H:%M}\n续上额度"))
-        headline = md(f"**明天 {ws:%H:%M}–{we:%H:%M} 连续可用 · {first_label}**")
-        sub = md(f"在你工作的 {_fmt_hours(work_hours)} 小时里，给你铺好 {window_count} 个满额度窗口。")
-        metric = md(
-            f"📊 **{_fmt_hours(work_hours)} 小时内可用额度 ≈ {window_count * 100}%**"
-            f"　·　相当于 {window_count} 个满窗口"
-        )
-        baseline = md(
-            f"<font color='grey'>不安排的话：同样 {_fmt_hours(work_hours)} 小时只有 1 个窗口 = 100%。</font>"
-        )
-        phases = [
-            md(f"✅ **开工前** · {prep_start:%H:%M} 替你启动一档额度，{ws:%H:%M} 打开直接用。"),
-            md(f"🔄 **工作中** · {second_warm:%H:%M} 自动续上第二档，你不用管。"),
-        ]
+        timeline.append(_seg_column(_seg_weight(w1_h), "blue-200", f"{ws:%H:%M}\n开工"))
+        timeline.append(_seg_column(_seg_weight(w2_h), "blue-200", f"{second_warm:%H:%M}\n续上"))
+        headline = md(f"**明天 {ws:%H:%M}–{we:%H:%M}：{first_label}**")
+        note = md(f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。")
 
     elements = [
         headline,
-        sub,
-        _row(bar, "8px 0px 2px 0px"),
-        _row(axis, "0px 0px 6px 0px"),
-        metric,
-        baseline,
-        *phases,
-        md("<font color='grey'>说明：预热会各产生一次真实请求。</font>"),
+        _row(timeline, "8px 0px 6px 0px"),
+        note,
     ]
     return elements
 
@@ -500,7 +448,6 @@ def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
             "default",
             _callback("adjust_schedule_time", request=request),
         ),
-        _button("仅提醒", "default", _callback("schedule_remind_only")),
     ]
     for offset in range(0, len(buttons), 2):
         elements.append(

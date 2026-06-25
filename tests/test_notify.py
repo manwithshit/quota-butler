@@ -173,21 +173,21 @@ class TestPlanningCards(unittest.TestCase):
         whole = str(card)
         actions = [value["action"] for value in _callbacks(card)]
 
-        # 结果承诺 + 中文动词标注 + 200% 卖点
         self.assertIn("09:00–14:00", text)
-        self.assertIn("06:30", text)
-        self.assertIn("11:30", text)
-        self.assertIn("开始计时", whole)
-        self.assertIn("续上额度", whole)
-        self.assertIn("200%", text)
-        self.assertIn("满窗口", text)
+        self.assertIn("06:30", whole)
+        self.assertIn("11:30", whole)
+        self.assertIn("开工", whole)
+        self.assertIn("续上", whole)
+        self.assertIn("2** 个预热任务", text)
+        self.assertIn("真实请求", text)
         # 彩色比例条用 -200 浅色档 + 加权列宽
         self.assertIn("blue-200", whole)
         self.assertIn("grey-200", whole)
         self.assertIn("weighted", whole)
-        # 旧技术风文案已从可见区移除（event.purpose 仍在回调 payload 里，属内部数据）
+        # 旧技术风与冗长解释已从可见区移除（event.purpose 仍在回调 payload 里，属内部数据）
         self.assertNotIn("准备第一个窗口", text)
         self.assertNotIn("预计连续覆盖", text)
+        self.assertNotIn("不安排的话", text)
         self.assertNotIn("CAS", text)
         self.assertEqual(
             actions,
@@ -195,11 +195,11 @@ class TestPlanningCards(unittest.TestCase):
                 "adopt_schedule",
                 "adjust_schedule_agents",
                 "adjust_schedule_time",
-                "schedule_remind_only",
             ],
         )
         self.assertIn("更换 AI 工具", whole)
         self.assertNotIn("调整 Agent", whole)
+        self.assertNotIn("仅提醒", whole)
 
     def test_dual_agent_plan_card_shows_relay_and_codex_prewarm(self):
         request = PlanRequest(date(2026, 6, 20), "range", "09:00", "18:00", "both")
@@ -215,8 +215,7 @@ class TestPlanningCards(unittest.TestCase):
         self.assertEqual(len(codex_events), 2)     # P2: 垫窗 + 接力 两个 Codex 任务
         self.assertIn("接力", whole)
         self.assertIn("wathet-200", whole)         # Codex 段换色
-        self.assertIn("备好窗口", whole)            # P2: Codex 提前垫窗显式表达
-        self.assertIn("连续可用", whole)            # 双模型讲时长
+        self.assertIn("真实请求", whole)
 
     def test_dual_agent_control_exposes_three_explicit_tool_choices(self):
         card = build_agent_control_card(

@@ -66,6 +66,25 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(plan.agents, ("codex",))
         self.assertIn("只使用 Codex", plan.reason)
 
+    def test_auto_ranks_weekly_quota_before_five_hour_quota(self):
+        request = PlanRequest(
+            target_date=date(2026, 6, 20),
+            time_mode="range",
+            work_start="09:00",
+            work_end="18:00",
+            agent_strategy="auto",
+        )
+
+        plan = build_plan(
+            request,
+            {
+                "cc": self._usage("cc", 10, weekly_utilization=95),
+                "codex": self._usage("codex", 30, weekly_utilization=20),
+            },
+        )
+
+        self.assertEqual(plan.agents, ("codex", "cc"))
+
     def test_explicit_agent_control_overrides_auto_selection(self):
         request = PlanRequest(
             target_date=date(2026, 6, 20),
@@ -122,14 +141,24 @@ class TestPlanner(unittest.TestCase):
         self.assertEqual(parse_agents("Claude Code,codex,cc"), ("cc", "codex"))
 
     @staticmethod
-    def _usage(provider, utilization):
+    def _usage(provider, utilization, weekly_utilization=None):
+        weekly = None
+        if weekly_utilization is not None:
+            weekly = WindowUsage(
+                weekly_utilization,
+                datetime(2026, 6, 25, 9, 0, tzinfo=timezone.utc),
+                7 * 24 * 3600,
+                "weekly",
+            )
         return Usage(
             provider,
             WindowUsage(
                 utilization,
                 datetime(2026, 6, 20, 11, 30, tzinfo=timezone.utc),
                 5 * 3600,
+                "five_hour",
             ),
+            weekly,
         )
 
 

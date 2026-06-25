@@ -127,7 +127,11 @@ def _handle_locked(payload, cfg, config_path, dry_run):
             _safe_receipt(f"好，{minutes} 分钟后再提醒", reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
-        if action in ("recovery_skip", "tomorrow_skip", "schedule_remind_only", "skip"):
+        if action == "schedule_remind_only":
+            _safe_receipt("仅提醒功能未上线，请重新打开菜单选择可用操作", reply_cfg, dry_run)
+            return _finish(cfg, st, 1)
+
+        if action in ("recovery_skip", "tomorrow_skip", "skip"):
             if action == "recovery_skip":
                 st.pending_recovery = None
             if action == "tomorrow_skip":
@@ -136,8 +140,6 @@ def _handle_locked(payload, cfg, config_path, dry_run):
                     reply_cfg,
                     dry_run,
                 )
-            if action == "schedule_remind_only":
-                _safe_receipt("已改为仅提醒，不会创建本地预热任务", reply_cfg, dry_run)
             return _finish(cfg, st, 0)
 
         _safe_receipt("该卡片已失效，请重新打开菜单", reply_cfg, dry_run)
