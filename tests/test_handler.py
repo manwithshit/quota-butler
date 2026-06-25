@@ -329,6 +329,23 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(rc, 0)
         push.assert_called_once()
 
+    @mock.patch("quota_butler.handler.push_status_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_query_replies_to_source_chat_when_bridge_provides_chat_id(
+        self, detect, push
+    ):
+        detect.return_value = {"codex": _connected("codex")}
+
+        rc = handler.handle(
+            {"action": "query_status", "_chat_id": "oc_direct"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        cfg = push.call_args.args[1]
+        self.assertEqual(cfg.feishu.chat_id, "oc_direct")
+        self.assertEqual(cfg.feishu.user_id, "")
+
 
 if __name__ == "__main__":
     unittest.main()
