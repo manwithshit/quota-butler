@@ -17,6 +17,7 @@ class WindowUsage:
     utilization: float            # 已用百分比 0–100
     resets_at: Optional[datetime] # 该窗口重置的绝对时间（带时区）
     window_seconds: Optional[int] = None  # 窗口时长（秒），用于区分 5h / 7天 / 月度
+    kind: str = ""                # five_hour / weekly / monthly / unknown
 
 
 @dataclass

@@ -1,5 +1,6 @@
 import os
 import plistlib
+import sys
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
@@ -64,12 +65,21 @@ class TestPlanTasks(unittest.TestCase):
             config = Config(plan_tasks_dir=directory)
             record = plan_record(_plan())
 
-            tasks = install_plan_tasks(
-                record,
-                config,
-                now=datetime(2099, 6, 19, tzinfo=timezone.utc),
-                config_path=os.path.join(directory, "config.yaml"),
-            )
+            config_path = os.path.join(directory, "config.yaml")
+            lark_config = os.path.join(directory, "lark-cli")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "LARK_CHANNEL": "codex",
+                    "LARKSUITE_CLI_CONFIG_DIR": lark_config,
+                },
+            ):
+                tasks = install_plan_tasks(
+                    record,
+                    config,
+                    now=datetime(2099, 6, 19, tzinfo=timezone.utc),
+                    config_path=config_path,
+                )
 
             providers = [task["provider"] for task in tasks]
             self.assertIn("cc", providers)
@@ -81,6 +91,12 @@ class TestPlanTasks(unittest.TestCase):
                 argv = " ".join(plist["ProgramArguments"])
                 self.assertIn("scheduled_warmup", argv)
                 self.assertIn(task["provider"], argv)
+                env = plist["EnvironmentVariables"]
+                self.assertEqual(env["LARK_CHANNEL"], "codex")
+                self.assertEqual(env["LARKSUITE_CLI_CONFIG_DIR"], lark_config)
+                self.assertEqual(env["QUOTA_BUTLER_CONFIG"], config_path)
+                self.assertEqual(env["QUOTA_BUTLER_PYTHON"], sys.executable)
+                self.assertIn(os.path.dirname(sys.executable), env["PATH"])
 
     @mock.patch("quota_butler.plan_tasks.subprocess.run")
     def test_install_rolls_back_all_tasks_when_one_bootstrap_fails(self, run):

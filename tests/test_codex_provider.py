@@ -60,6 +60,7 @@ class TestCodexRead(unittest.TestCase):
         self.assertEqual(usage.provider, "codex")
         self.assertEqual(usage.five_hour.utilization, 100.0)
         self.assertEqual(usage.five_hour.window_seconds, 2592000)   # 月度
+        self.assertEqual(usage.five_hour.kind, "monthly")
         self.assertIsNotNone(usage.five_hour.resets_at.tzinfo)
         self.assertEqual(int(usage.five_hour.resets_at.timestamp()), 1782898200)
         self.assertIsNone(usage.seven_day)                          # 免费档无 secondary
@@ -70,8 +71,10 @@ class TestCodexRead(unittest.TestCase):
         with mock.patch("quota_butler.providers.codex.AUTH_PATH", self.auth):
             usage = CodexProvider().read_usage()
         self.assertEqual(usage.five_hour.window_seconds, 18000)     # 5h
+        self.assertEqual(usage.five_hour.kind, "five_hour")
         self.assertEqual(usage.seven_day.utilization, 55.0)
         self.assertEqual(usage.seven_day.window_seconds, 604800)    # 7天
+        self.assertEqual(usage.seven_day.kind, "weekly")
 
     @mock.patch("quota_butler.providers.codex.urllib.request.urlopen")
     def test_zero_usage_null_reset_at(self, urlopen):
