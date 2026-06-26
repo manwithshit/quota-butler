@@ -19,7 +19,7 @@ from quota_butler.providers.base import Usage, WindowUsage
 from quota_butler.schedule_flow import PlanRequest
 
 
-def _plan(strategy="both"):
+def _plan(strategy="auto"):
     request = PlanRequest(
         date(2099, 6, 20),
         "range",
@@ -39,7 +39,8 @@ class TestPlanRecord(unittest.TestCase):
         record = plan_record(_plan())
 
         self.assertEqual(record["plan_version"], 3)
-        self.assertEqual(record["request"]["agent_strategy"], "both")
+        self.assertEqual(record["request"]["agent_strategy"], "auto")
+        self.assertEqual(record["agents"], ["cc"])
         self.assertIn("purpose", record["events"][0])
         self.assertNotIn("cas", record)
         self.assertNotIn("preferences", record)
@@ -59,7 +60,7 @@ class TestPlanRecord(unittest.TestCase):
 
 class TestPlanTasks(unittest.TestCase):
     @mock.patch("quota_butler.plan_tasks.subprocess.run")
-    def test_install_creates_independent_tasks_for_both_agents(self, run):
+    def test_install_creates_independent_tasks_for_two_warmups(self, run):
         run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as directory:
             config = Config(plan_tasks_dir=directory)
@@ -81,9 +82,8 @@ class TestPlanTasks(unittest.TestCase):
                     config_path=config_path,
                 )
 
-            providers = [task["provider"] for task in tasks]
-            self.assertIn("cc", providers)
-            self.assertIn("codex", providers)
+            self.assertEqual([task["provider"] for task in tasks], ["cc", "cc"])
+            self.assertEqual(len(tasks), 2)
             self.assertEqual(run.call_count, len(tasks))
             for task in tasks:
                 with open(task["plist_path"], "rb") as stream:

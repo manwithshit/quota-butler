@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, Mapping, Optional
 
 from .agent_status import AgentState, AgentStatus
@@ -241,23 +241,40 @@ def build_manual_warmup_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, A
     for provider in ("cc", "codex"):
         status = statuses.get(provider)
         label = PROVIDER_LABEL[provider]
-        if status and status.plan_eligible:
+        reason = _manual_warmup_block_reason(status) if status else f"{label} 暂不可用"
+        if status and not reason:
             callback = _callback("warmup_now", provider=provider)
             if status.usage and status.usage.five_hour.resets_at:
                 callback["window_key"] = (
                     f"manual:{provider}:{status.usage.five_hour.resets_at.isoformat()}"
                 )
             buttons.append(_button(label, "primary" if not buttons else "default", callback))
-        elif status and status.state == AgentState.NEEDS_LOGIN:
-            lines.append(f"{label}：需要重新登录")
-        elif status and status.state == AgentState.CONNECTED:
-            lines.append(f"{label}：当前额度不适合预热")
         else:
-            lines.append(f"{label}：暂不可用")
+            lines.append(reason)
     if not buttons:
         lines.append("")
-        lines.append("暂时没有可预热的工具。")
-    return _card("额度管家：手动预热", lines, buttons)
+        lines.append("暂时没有需要立即预热的工具。")
+    return _card("额度管家：立即预热", lines, buttons)
+
+
+def _manual_warmup_block_reason(status: AgentStatus) -> str:
+    label = PROVIDER_LABEL[status.provider]
+    if status.state == AgentState.NEEDS_LOGIN:
+        return f"{label}：需要重新登录"
+    if status.state != AgentState.CONNECTED or not status.usage:
+        return f"{label}：暂不可用"
+    weekly = status.usage.seven_day
+    if weekly and weekly.utilization >= 100:
+        return f"{label}：{_window_label(weekly)}已耗尽，暂不可预热"
+    five = status.usage.five_hour
+    reset = five.resets_at
+    if reset:
+        now = datetime.now(reset.tzinfo) if reset.tzinfo else datetime.now()
+        if reset > now and five.utilization < 100:
+            return f"{label}：当前 5 小时窗口已在进行中，无需立即预热"
+        if reset > now and five.utilization >= 100:
+            return f"{label}：5 小时窗口已用尽，等刷新后再预热"
+    return ""
 
 
 def build_bedtime_card(
@@ -366,8 +383,8 @@ def build_time_card(
     )
     lines = [
         "**选择重度使用时间**",
-        "只需要选择开始时间；系统会按当前可编排工具生成预热节点。",
-        "单工具会生成接力计划，双工具可生成跨工具接力计划。",
+        "只需要选择开始时间；系统会优先选择一个可用工具，并生成两次预热节点。",
+        "确认计划前，你还可以调整两次预热时间。",
     ]
     if error:
         lines.extend(["", f"❌ {error}"])
@@ -407,7 +424,7 @@ def build_agent_control_card(
             lines.append(f"{label} 暂不可用。")
         lines.extend(["", "重新检测后会按最新状态生成计划。"])
         return _card(
-            "更换 AI 工具",
+            "AI 工具状态",
             lines,
             [
                 _button(
@@ -424,7 +441,6 @@ def build_agent_control_card(
     for label, strategy in (
         ("Claude Code", "cc"),
         ("Codex", "codex"),
-        ("两个都用", "both"),
     ):
         candidate = PlanRequest(
             request.target_date,
@@ -443,11 +459,7 @@ def build_agent_control_card(
                 },
             )
         )
-    return _card(
-        "更换 AI 工具",
-        ["**明天想使用哪个 AI 工具？**"],
-        buttons,
-    )
+    return _card("选择 AI 工具", ["**明天想使用哪个 AI 工具？**"], buttons)
 
 
 def _seg_weight(hours: float) -> int:
@@ -535,31 +547,50 @@ def _schedule_timeline_elements(plan: SchedulePlan):
 
 def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
     record = plan_record(plan)
-    request = _request_dict(plan.request)
     elements = _schedule_timeline_elements(plan)
-    buttons = [
-        _button("采用计划", "primary", _callback("adopt_schedule", plan=record)),
-        _button(
-            "更换 AI 工具",
-            "default",
-            _callback("adjust_schedule_agents", request=request),
-        ),
-        _button(
-            "修改使用时间",
-            "default",
-            _callback("adjust_schedule_time", request=request),
-        ),
-    ]
-    for offset in range(0, len(buttons), 2):
-        elements.append(
-            {
-                "tag": "column_set",
-                "columns": [
-                    {"tag": "column", "elements": [button]}
-                    for button in buttons[offset:offset + 2]
-                ],
-            }
-        )
+    warmups = sorted(event.at for event in plan.events)
+    elements.append(
+        {
+            "tag": "markdown",
+            "content": "确认前可以调整两次预热时间；两次预热至少间隔 5 小时。",
+        }
+    )
+    elements.append(
+        {
+            "tag": "form",
+            "name": "v3_adopt_plan",
+            "elements": [
+                {
+                    "tag": "picker_time",
+                    "name": "first_warmup",
+                    "placeholder": {"tag": "plain_text", "content": "第一次预热"},
+                    "initial_time": warmups[0].strftime("%H:%M"),
+                    "required": True,
+                },
+                {
+                    "tag": "picker_time",
+                    "name": "second_warmup",
+                    "placeholder": {"tag": "plain_text", "content": "第二次预热"},
+                    "initial_time": warmups[1].strftime("%H:%M"),
+                    "required": True,
+                },
+                {
+                    "tag": "button",
+                    "name": "submit_adopt_plan",
+                    "text": {"tag": "plain_text", "content": "采用计划"},
+                    "type": "primary",
+                    "width": "fill",
+                    "form_action_type": "submit",
+                    "behaviors": [
+                        {
+                            "type": "callback",
+                            "value": _callback("adopt_schedule", plan=record),
+                        }
+                    ],
+                },
+            ],
+        }
+    )
     return {
         "schema": "2.0",
         "config": {"summary": {"content": "额度管家：明日计划预览"}},
@@ -694,6 +725,8 @@ def _request_dict(request: PlanRequest):
         "work_start": request.work_start,
         "work_end": request.work_end,
         "agent_strategy": request.agent_strategy,
+        "first_warmup": request.first_warmup,
+        "second_warmup": request.second_warmup,
     }
 
 

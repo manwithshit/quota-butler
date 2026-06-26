@@ -6,9 +6,11 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Mapping, Optional
 
-FLOW_VERSION = 4
+FLOW_VERSION = 5
 TIME_MODES = ("point", "range")
 AGENT_STRATEGIES = ("auto", "cc", "codex", "both")
+MIN_WARMUP_GAP_MINUTES = 5 * 60
+DEFAULT_WARMUP_GAP_MINUTES = MIN_WARMUP_GAP_MINUTES + 1
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,8 @@ class PlanRequest:
     work_start: str = "09:00"
     work_end: str = "14:00"
     agent_strategy: str = "auto"
+    first_warmup: str = ""
+    second_warmup: str = ""
 
 
 def parse_plan_request(
@@ -38,17 +42,34 @@ def parse_plan_request(
         raise ValueError("AI 工具选择无效")
     work_start = normalize_hhmm(raw.get("work_start") or "09:00")
     if time_mode == "point":
-        duration = 8 if available_agent_count >= 2 else 5
-        work_end = _add_hours(work_start, duration)
+        first_warmup = normalize_hhmm(
+            raw.get("first_warmup") or _add_minutes(work_start, -150)
+        )
+        second_warmup = normalize_hhmm(
+            raw.get("second_warmup")
+            or _add_minutes(first_warmup, DEFAULT_WARMUP_GAP_MINUTES)
+        )
+        validate_warmup_times(first_warmup, second_warmup)
+        work_end = _add_minutes(second_warmup, 5 * 60)
     else:
         work_end = normalize_hhmm(raw.get("work_end") or "")
         validate_work_time(work_start, work_end)
+        first_warmup = normalize_hhmm(
+            raw.get("first_warmup") or _add_minutes(work_start, -150)
+        )
+        second_warmup = normalize_hhmm(
+            raw.get("second_warmup")
+            or _add_minutes(first_warmup, DEFAULT_WARMUP_GAP_MINUTES)
+        )
+        validate_warmup_times(first_warmup, second_warmup)
     return PlanRequest(
         target_date=target_date,
         time_mode=time_mode,
         work_start=work_start,
         work_end=work_end,
         agent_strategy=strategy,
+        first_warmup=first_warmup,
+        second_warmup=second_warmup,
     )
 
 
@@ -83,7 +104,10 @@ def validate_flow_context(
 
 
 def normalize_hhmm(value: Any) -> str:
-    text = str(value).strip().split()[0]
+    pieces = str(value).strip().split()
+    if not pieces:
+        raise ValueError("时间格式必须为 HH:mm")
+    text = pieces[0]
     parts = text.split(":")
     if len(parts) != 2:
         raise ValueError("时间格式必须为 HH:mm")
@@ -107,9 +131,22 @@ def validate_work_time(work_start: str, work_end: str) -> int:
     return duration
 
 
+def validate_warmup_times(first_warmup: str, second_warmup: str) -> int:
+    first = _minutes(normalize_hhmm(first_warmup))
+    second = _minutes(normalize_hhmm(second_warmup))
+    gap = second - first
+    if gap < MIN_WARMUP_GAP_MINUTES:
+        raise ValueError("两次预热时间至少需要间隔 5 小时")
+    return gap
+
+
 def _add_hours(value: str, hours: int) -> str:
+    return _add_minutes(value, hours * 60)
+
+
+def _add_minutes(value: str, minutes: int) -> str:
     start = datetime.combine(date.today(), datetime.strptime(value, "%H:%M").time())
-    end = start + timedelta(hours=hours)
+    end = start + timedelta(minutes=minutes)
     if end.date() != start.date():
         raise ValueError("默认计划不能跨天")
     return end.strftime("%H:%M")

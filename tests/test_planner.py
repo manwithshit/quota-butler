@@ -24,7 +24,7 @@ class TestPlanner(unittest.TestCase):
             [(event.agent, event.at.strftime("%H:%M"), event.purpose) for event in plan.events],
             [
                 ("cc", "06:30", "准备第一个窗口"),
-                ("cc", "11:30", "恢复后准备第二个窗口"),
+                ("cc", "11:31", "恢复后准备第二个窗口"),
             ],
         )
         self.assertEqual(plan.work_start.strftime("%H:%M"), "09:00")
@@ -43,7 +43,7 @@ class TestPlanner(unittest.TestCase):
 
         self.assertEqual(
             [event.at.strftime("%H:%M") for event in plan.events],
-            ["09:30", "14:30"],
+            ["09:30", "14:31"],
         )
 
     def test_auto_uses_one_agent_for_short_range_even_when_two_are_available(self):
@@ -83,7 +83,7 @@ class TestPlanner(unittest.TestCase):
             },
         )
 
-        self.assertEqual(plan.agents, ("codex", "cc"))
+        self.assertEqual(plan.agents, ("codex",))
 
     def test_explicit_agent_control_overrides_auto_selection(self):
         request = PlanRequest(
@@ -104,7 +104,7 @@ class TestPlanner(unittest.TestCase):
 
         self.assertEqual(plan.agents, ("cc",))
 
-    def test_both_strategy_adds_second_agent_as_extension(self):
+    def test_both_strategy_is_rejected_in_single_agent_flow(self):
         request = PlanRequest(
             target_date=date(2026, 6, 20),
             time_mode="range",
@@ -113,17 +113,14 @@ class TestPlanner(unittest.TestCase):
             agent_strategy="both",
         )
 
-        plan = build_plan(
-            request,
-            {
-                "cc": self._usage("cc", 20),
-                "codex": self._usage("codex", 30),
-            },
-        )
-
-        self.assertEqual(plan.agents, ("cc", "codex"))
-        self.assertTrue(any(event.agent == "codex" for event in plan.events))
-        self.assertIn("接力", plan.reason)
+        with self.assertRaisesRegex(ValueError, "一次只编排一个"):
+            build_plan(
+                request,
+                {
+                    "cc": self._usage("cc", 20),
+                    "codex": self._usage("codex", 30),
+                },
+            )
 
     def test_selected_unavailable_agent_is_rejected(self):
         request = PlanRequest(
