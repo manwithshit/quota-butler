@@ -112,6 +112,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
       }
       if (!removed) return ctx.receipt('没有可以取消的未执行任务');
       st.plansByDate = plans;
+      st.activePlan = null;
       activePlanIndex(st);
       ctx.scheduler?.armPlans(Object.values(plans));
       ctx.state.save();
@@ -381,7 +382,8 @@ function hasPendingWarmup(plan: Record<string, unknown>, executedWarmups: string
   const planId = String(plan['plan_id'] ?? '');
   const now = Date.now();
   for (const ev of (plan['events'] as Array<Record<string, unknown>> | undefined) ?? []) {
-    if (ev['kind'] !== 'warmup') continue;
+    const kind = String(ev['kind'] ?? ev['type'] ?? 'warmup');
+    if (kind !== 'warmup') continue;
     const key = `${planId}:${String(ev['agent'])}:${String(ev['at'])}`;
     if (!executedWarmups.includes(key) && new Date(String(ev['at'])).getTime() > now) return true;
   }
