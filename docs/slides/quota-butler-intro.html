@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>额度管家功能介绍</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #111318;
+      --muted: #667085;
+      --line: rgba(17, 19, 24, 0.10);
+      --blue: #1473e6;
+      --green: #13a46c;
+      --panel: rgba(255, 255, 255, 0.78);
+      --shadow: 0 30px 80px rgba(20, 32, 50, 0.16);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #f5f6f8;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC",
+        "Helvetica Neue", Arial, sans-serif;
+    }
+
+    .deck {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .slide {
+      position: absolute;
+      width: min(100vw - 48px, calc((100vh - 48px) * 16 / 9));
+      aspect-ratio: 16 / 9;
+      border-radius: 28px;
+      overflow: hidden;
+      background: #ffffff;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateX(36px) scale(0.985);
+      transition: opacity 240ms ease, transform 240ms ease;
+      pointer-events: none;
+    }
+
+    .slide.active {
+      opacity: 1;
+      transform: translateX(0) scale(1);
+      pointer-events: auto;
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 16% 16%, rgba(20, 115, 230, 0.10), transparent 30%),
+        radial-gradient(circle at 88% 82%, rgba(19, 164, 108, 0.10), transparent 28%),
+        linear-gradient(135deg, rgba(255,255,255,0.90), rgba(245,247,250,0.72));
+      pointer-events: none;
+    }
+
+    .content {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      padding: 64px 76px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .kicker {
+      color: var(--blue);
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: 0;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      max-width: 820px;
+      margin: 0;
+      font-size: 76px;
+      line-height: 0.98;
+      letter-spacing: 0;
+      font-weight: 800;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 54px;
+      line-height: 1.04;
+      letter-spacing: 0;
+      font-weight: 780;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 24px;
+      line-height: 1.48;
+      letter-spacing: 0;
+    }
+
+    .hero-copy {
+      width: 52%;
+      margin-top: auto;
+      margin-bottom: auto;
+    }
+
+    .hero-copy p {
+      margin-top: 28px;
+      font-size: 28px;
+    }
+
+    .hero-image {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 56%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      mask-image: linear-gradient(to right, transparent 0%, black 18%);
+      opacity: 0.95;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 48px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 28px;
+      backdrop-filter: blur(24px);
+      min-height: 230px;
+    }
+
+    .panel b {
+      display: block;
+      font-size: 26px;
+      line-height: 1.2;
+      margin-bottom: 18px;
+    }
+
+    .panel p {
+      font-size: 20px;
+      line-height: 1.45;
+    }
+
+    .flow-wrap {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 34px;
+      align-items: center;
+      height: 100%;
+    }
+
+    .flow-image {
+      width: 100%;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      box-shadow: 0 20px 50px rgba(20, 32, 50, 0.12);
+    }
+
+    .list {
+      display: grid;
+      gap: 16px;
+      margin-top: 34px;
+    }
+
+    .item {
+      display: grid;
+      grid-template-columns: 36px 1fr;
+      gap: 16px;
+      align-items: start;
+      padding: 20px 22px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+    }
+
+    .num {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--ink);
+      font-weight: 800;
+      font-size: 18px;
+    }
+
+    .item b {
+      display: block;
+      font-size: 24px;
+      margin-bottom: 6px;
+    }
+
+    .item span {
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    .install {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 34px;
+      align-items: stretch;
+      margin-top: 42px;
+    }
+
+    .install-card {
+      background: #101216;
+      color: #fff;
+      border-radius: 24px;
+      padding: 30px;
+      box-shadow: 0 24px 70px rgba(16, 18, 22, 0.26);
+    }
+
+    .install-card .label {
+      color: rgba(255, 255, 255, 0.56);
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+
+    .url {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 24px;
+      line-height: 1.35;
+      word-break: break-all;
+    }
+
+    .prompt {
+      background: rgba(255, 255, 255, 0.82);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 28px;
+    }
+
+    .prompt b {
+      display: block;
+      font-size: 22px;
+      margin-bottom: 14px;
+    }
+
+    .prompt p {
+      font-size: 20px;
+      color: #333842;
+    }
+
+    .progress {
+      position: absolute;
+      left: 50%;
+      bottom: 26px;
+      z-index: 4;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 34px;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(17, 19, 24, 0.16);
+    }
+
+    .dot.active {
+      background: var(--ink);
+    }
+
+    .hint {
+      position: absolute;
+      right: 28px;
+      bottom: 20px;
+      color: rgba(17, 19, 24, 0.38);
+      font-size: 14px;
+      z-index: 4;
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-label="额度管家介绍幻灯片">
+    <section class="slide active">
+      <img class="hero-image" src="assets/product-hero.png" alt="" />
+      <div class="content">
+        <div class="hero-copy">
+          <div class="kicker">Quota Butler</div>
+          <h1>我们做这个功能</h1>
+          <p>把 Claude Code 和 Codex 的额度状态、预热计划、完成提醒，收进一个飞书私聊机器人里。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="content">
+        <div class="kicker">Pain Point</div>
+        <h2>不是额度不够，而是额度总在错误的时间恢复。</h2>
+        <div class="grid">
+          <div class="panel">
+            <b>看不见</b>
+            <p>5 小时窗口、周额度、刷新时间分散在不同入口，真正要工作时才发现快用完。</p>
+          </div>
+          <div class="panel">
+            <b>容易错过</b>
+            <p>凌晨恢复、早上开工、下午接力，各自都需要记时间，靠人脑很难稳定。</p>
+          </div>
+          <div class="panel">
+            <b>切换成本高</b>
+            <p>Claude Code 和 Codex 都能用，但谁先上、谁接力、什么时候预热，需要系统帮忙算清楚。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="content">
+        <div class="flow-wrap">
+          <div>
+            <div class="kicker">How It Works</div>
+            <h2>一个私聊入口，四个核心动作。</h2>
+            <div class="list">
+              <div class="item">
+                <div class="num">1</div>
+                <div><b>查询额度</b><span>直接看还剩多少、什么时候刷新。</span></div>
+              </div>
+              <div class="item">
+                <div class="num">2</div>
+                <div><b>立即预热</b><span>手动触发一次真实预热，不创建长期计划。</span></div>
+              </div>
+              <div class="item">
+                <div class="num">3</div>
+                <div><b>设置明日计划</b><span>只选开始时间，系统自动安排预热节点。</span></div>
+              </div>
+              <div class="item">
+                <div class="num">4</div>
+                <div><b>查看当前计划</b><span>展示未执行、已执行、失败，并可取消所有计划。</span></div>
+              </div>
+            </div>
+          </div>
+          <img class="flow-image" src="assets/product-flow.png" alt="额度管家产品流程图" />
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="content">
+        <div class="kicker">Install</div>
+        <h2>截图发给你的 Agent，让它直接安装。</h2>
+        <div class="install">
+          <div class="install-card">
+            <div class="label">GitHub</div>
+            <div class="url">https://github.com/manwithshit/quota-butler</div>
+          </div>
+          <div class="prompt">
+            <b>给 Agent 的中文 Prompt</b>
+            <p>请打开这个 GitHub 项目，帮我在 Mac 上安装并配置额度管家。目标是通过飞书独立机器人私聊查询 Claude Code / Codex 额度、设置明日预热计划，并在预热完成后提醒我。请先阅读 README 和 deploy/install.sh，再一步步引导我填写本机配置。不要把 App Secret、Token 或本机状态文件写进仓库或聊天记录。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="progress" aria-hidden="true"></div>
+    <div class="hint">← / → 切换</div>
+  </main>
+
+  <script>
+    const slides = [...document.querySelectorAll(".slide")];
+    const progress = document.querySelector(".progress");
+    let index = 0;
+
+    slides.forEach((_, i) => {
+      const dot = document.createElement("div");
+      dot.className = "dot" + (i === 0 ? " active" : "");
+      progress.appendChild(dot);
+    });
+
+    function show(next) {
+      index = Math.max(0, Math.min(slides.length - 1, next));
+      slides.forEach((slide, i) => slide.classList.toggle("active", i === index));
+      [...progress.children].forEach((dot, i) => dot.classList.toggle("active", i === index));
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === " ") show(index + 1);
+      if (event.key === "ArrowLeft") show(index - 1);
+    });
+  </script>
+</body>
+</html>

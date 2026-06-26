@@ -534,10 +534,10 @@ def build_command_menu_card() -> Dict[str, Any]:
         "额度管家",
         ["**想做什么？**"],
         [
-            _button("当前额度", "primary", _callback("query_status")),
-            _button("手动预热", "default", _callback("manual_warmup")),
-            _button("明日计划", "default", _callback("schedule_intent", intent="tomorrow")),
+            _button("查询额度", "primary", _callback("query_status")),
             _button("查看当前计划", "default", _callback("view_schedule")),
+            _button("立即预热", "default", _callback("manual_warmup")),
+            _button("设置明日计划", "default", _callback("schedule_intent", intent="tomorrow")),
         ],
     )
 
