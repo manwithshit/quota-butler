@@ -233,10 +233,7 @@ def build_recovery_card(provider: str, window_key: str) -> Dict[str, Any]:
 
 
 def build_manual_warmup_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
-    lines = [
-        "**选择要立即预热的 AI 工具**",
-        "点击后会立刻发起一次真实请求。",
-    ]
+    lines = []
     buttons = []
     for provider in ("cc", "codex"):
         status = statuses.get(provider)
@@ -251,9 +248,12 @@ def build_manual_warmup_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, A
             buttons.append(_button(label, "primary" if not buttons else "default", callback))
         else:
             lines.append(reason)
-    if not buttons:
-        lines.append("")
-        lines.append("暂时没有需要立即预热的工具。")
+    if buttons:
+        lines = [
+            "**选择要立即预热的 AI 工具**",
+            "点击后会立刻发起一次真实请求。",
+            *lines,
+        ]
     return _card("额度管家：立即预热", lines, buttons)
 
 
@@ -273,7 +273,9 @@ def _manual_warmup_block_reason(status: AgentStatus) -> str:
         if reset > now and five.utilization < 100:
             return f"{label}：当前 5 小时窗口已在进行中，无需立即预热"
         if reset > now and five.utilization >= 100:
-            return f"{label}：5 小时窗口已用尽，等刷新后再预热"
+            return f"{label}：5 小时窗口已用尽，等待刷新后再预热"
+    if five.utilization >= 100:
+        return f"{label}：5 小时窗口已用尽，等待刷新后再预热"
     return ""
 
 

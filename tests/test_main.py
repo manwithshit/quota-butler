@@ -175,6 +175,44 @@ class TestMainV3(unittest.TestCase):
         self.assertEqual(receipt.call_args.args[1].feishu.chat_id, "oc_p2p")
         self.assertIsNone(state_mod.load(self.state_path).pending_warmup_receipts)
 
+    @mock.patch("quota_butler.main.push_receipt")
+    @mock.patch("quota_butler.main.get_provider")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_periodic_run_executes_overdue_plan_warmup(self, detect, get_provider, receipt):
+        detect.return_value = {}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                notification_target={"chat_id": "oc_p2p", "chat_type": "p2p"},
+                active_plan={
+                    "plan_id": "p123",
+                    "plan_version": 3,
+                    "status": "active",
+                    "work_start": "2026-06-20T09:00:00",
+                    "work_end": "2026-06-20T16:31:00",
+                    "tasks": [
+                        {
+                            "provider": "codex",
+                            "scheduled_for": "2026-06-20T11:30:00",
+                            "status": "pending",
+                        },
+                    ],
+                },
+            ),
+        )
+
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 20, 11, 45, tzinfo=LOCAL),
+        )
+
+        self.assertEqual(rc, 0)
+        get_provider.return_value.warmup.assert_called_once_with("say hi")
+        self.assertIn("11:30 的预热已完成", receipt.call_args.args[0])
+        saved = state_mod.load(self.state_path).active_plan["tasks"][0]
+        self.assertEqual(saved["status"], "executed")
+        self.assertIsNone(state_mod.load(self.state_path).pending_warmup_receipts)
+
     @mock.patch("quota_butler.main.push_interactive")
     @mock.patch("quota_butler.main.detect_agents")
     def test_recovery_during_23_to_08_quiet_hours_is_not_sent(self, detect, push):

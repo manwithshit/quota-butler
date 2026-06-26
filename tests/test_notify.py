@@ -347,9 +347,11 @@ class TestReminderAndMenuCards(unittest.TestCase):
         text = _markdown(card)
 
         self.assertEqual(_callbacks(card), [])
+        self.assertNotIn("选择要立即预热", text)
+        self.assertNotIn("点击后会立刻发起", text)
         self.assertIn("Claude Code：当前 5 小时窗口已在进行中，无需立即预热", text)
         self.assertIn("Codex：7 天额度已耗尽，暂不可预热", text)
-        self.assertIn("暂时没有需要立即预热的工具", text)
+        self.assertNotIn("暂时没有需要立即预热的工具", text)
 
     def test_all_callbacks_use_private_quota_command(self):
         cards = [
