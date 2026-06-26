@@ -1,0 +1,49 @@
+{
+  "name": "quota-butler",
+  "version": "0.1.0",
+  "description": "飞书额度管家：看得见 Claude Code / Codex 额度，恢复时提醒，明日重度使用前自动预热。一个 npm 包、扫码即用。",
+  "type": "module",
+  "bin": {
+    "quota-butler": "dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.en.md",
+    "docs/images",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepare": "npm run build",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/cli.mjs run"
+  },
+  "dependencies": {
+    "@larksuite/channel": "^0.2.0",
+    "commander": "^12.1.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "claude-code",
+    "codex",
+    "quota",
+    "usage",
+    "额度"
+  ],
+  "license": "MIT"
+}

@@ -4,13 +4,13 @@
 
 额度管家是一个运行在 Mac 本地、通过飞书/Lark 私聊交互的 Claude Code / Codex 额度助手。它不接大模型聊天，也不会把你的消息发给模型推理；它只做确定性的额度查询、状态提醒和预热计划编排。
 
-适合经常使用 Claude Code / Codex 的人：你可以在飞书里看到 5 小时窗口和 7 天额度的真实状态，提前安排明天的重度使用时间，并让本机在合适的时间点做预热。
+它的目标是让你最大化利用已经拥有的额度：看得见 5 小时窗口和 7 天额度，知道什么时候恢复，提前安排明天的重度使用时间，并让本机在合适的时间点自动预热。
 
 ## 功能预览
 
 ### 查询额度
 
-同时展示 Claude Code 和 Codex 的 5 小时窗口、7 天额度、剩余百分比和刷新时间。状态判断会优先看长期额度：如果 7 天额度耗尽，即使 5 小时窗口充足，也会提示真正的上限在周额度。
+同时展示 Claude Code 和 Codex 的 5 小时窗口、7 天额度或月度额度、剩余百分比和刷新时间。状态判断会优先看长期额度：如果 7 天额度耗尽，即使 5 小时窗口充足，也会提示真正的上限在周额度。
 
 ![额度查询](docs/images/quota-status.png)
 
@@ -26,17 +26,35 @@
 
 ![明日计划](docs/images/tomorrow-plan.png)
 
-## 现在支持什么
+## 安装要求
 
-- 在飞书/Lark 私聊里查询 Claude Code 和 Codex 额度。
-- 展示 5 小时窗口、7 天额度或月度额度的剩余百分比与刷新时间。
-- 当 5 小时窗口 100% 且尚未开始时，提示“发送任意消息时触发”。
-- 按周额度优先级选择可规划工具，避免把 7 天额度耗尽的工具排进计划。
-- 从一个开始时间生成单 Agent 明日计划，两次预热至少间隔 5 小时。
-- 支持查看今日/明日计划，展示每个预热节点的执行状态。
-- 支持立即预热，但只在工具确实适合预热时提供入口。
-- 支持静默时段，夜间非紧急提醒会延后汇总。
-- 通过 macOS LaunchAgent 常驻运行，不需要一直开着命令行窗口。
+- macOS，支持 `launchd`
+- Node.js 20.12+
+- 本机已安装并登录 Claude Code CLI 或 Codex CLI
+- 一个飞书/Lark 账号
+
+首次运行会在终端显示二维码。用飞书/Lark 扫码后，会自动创建并绑定额度管家的个人机器人，不需要手动去开放平台创建应用，也不需要配置 lark-cli。
+
+## 快速开始
+
+```bash
+npx github:manwithshit/quota-butler run
+```
+
+首次运行：
+
+1. 终端出现二维码。
+2. 用飞书/Lark App 扫码完成应用创建。
+3. 打开新建的额度管家机器人私聊。
+4. 发送 `额度` 或 `菜单`。
+
+确认能正常收发后，可以让它后台常驻：
+
+```bash
+npx github:manwithshit/quota-butler start
+npx github:manwithshit/quota-butler status
+npx github:manwithshit/quota-butler stop
+```
 
 ## 飞书/Lark 入口
 
@@ -52,59 +70,17 @@ menu
 help
 ```
 
-除了这几个入口命令，其它操作都通过飞书/Lark 卡片按钮完成。项目当前只绑定独立机器人的私聊，不把群聊作为主动提醒目标。
+其它消息会默认回复菜单，方便发现可用操作。项目当前只绑定独立机器人的私聊，不使用群聊作为主动提醒目标。
 
-## 安装要求
-
-- macOS，支持 `launchd`
-- Python 3.10+
-- 本机已登录 Claude Code CLI 或 Codex CLI
-- 已配置可用的 `lark-cli`
-- 一个飞书/Lark 自建应用机器人私聊
-
-敏感信息只应该保存在本机：飞书应用凭证、访问令牌、chat_id、open_id、本地状态文件、Claude Code / Codex 登录信息都不要提交到仓库。
-
-## 快速开始
-
-```bash
-git clone https://github.com/manwithshit/quota-butler.git
-cd quota-butler
-
-mkdir -p ~/.quota-butler
-cp config.example.yaml ~/.quota-butler/config.yaml
-
-python3 -m unittest discover -s tests -v
-python3 -m quota_butler.query --dry-run
-
-bash deploy/install.sh
-launchctl list | grep com.quota-butler
-```
-
-`--dry-run` 不会发送飞书/Lark 消息，也不会执行真实预热。
-
-## 首次绑定飞书私聊
-
-1. 在本机配置好飞书/Lark 自建应用和 `lark-cli`。
-2. 打开这个机器人的私聊。
-3. 发送 `额度` 或 `菜单`。
-4. 额度管家会把这个私聊记录到 `~/.quota-butler/state.json`，之后主动提醒会发到这里。
-
-如果要重新录制首次绑定流程，可以先备份 `~/.quota-butler/state.json`，移除其中的 `notification_target` 字段，再在机器人私聊里发送 `额度`。
-
-## 后台服务
-
-`deploy/install.sh` 会安装一个 macOS LaunchAgent：
+## 命令一览
 
 ```text
-com.quota-butler
-```
-
-安装后，额度管家会在后台定时检查额度状态、处理计划任务和发送提醒。普通用户不需要一直运行命令行。
-
-飞书/Lark 消息接收桥是独立服务。额度管家默认它已经能把机器人消息和卡片回调转发到：
-
-```bash
-python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
+quota-butler run        前台运行，首次扫码
+quota-butler start      安装并启动 macOS 后台常驻
+quota-butler stop       停止后台常驻
+quota-butler status     查看后台状态
+quota-butler selftest   离线自检，不连接飞书
+quota-butler report     预览晚间回顾卡
 ```
 
 ## 本地文件
@@ -112,24 +88,22 @@ python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
 运行时文件都在仓库外：
 
 ```text
-~/.quota-butler/config.yaml
+~/.quota-butler/config.json
 ~/.quota-butler/state.json
-~/.quota-butler/plan-tasks/
-本机 lark-cli profile
-Claude Code / Codex auth files
+~/.quota-butler/logs/
+Claude Code / Codex 登录文件
 ```
 
-## 卸载
+敏感信息只保存在本机。飞书应用凭证、访问令牌、open_id、chat_id、本地状态文件、Claude Code / Codex 登录信息都不要提交到仓库。
+
+## 开发
 
 ```bash
-bash deploy/uninstall.sh
+npm install
+npm test
+npm run typecheck
+npm run build
+node dist/cli.mjs selftest
 ```
 
-## 开发与测试
-
-```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile quota_butler/handler.py quota_butler/main.py quota_butler/notify.py quota_butler/schedule_flow.py quota_butler/state.py
-```
-
-当前核心逻辑都在测试里覆盖：额度状态解析、计划生成、计划采用/取消、静默时段、预热回执、飞书卡片文案和历史状态迁移。
+核心逻辑覆盖在测试里：额度状态解析、计划生成、计划采用/取消、静默时段、预热回执、飞书卡片文案和 provider 状态分类。
