@@ -509,20 +509,23 @@ def build_active_plan_card(record: Mapping[str, Any]) -> Dict[str, Any]:
     tasks = record.get("tasks") or []
     if tasks:
         for task in tasks:
+            status = _task_status_text(str(task.get("status") or "pending"))
             lines.append(
-                f"⏳ **{_hhmm(task.get('scheduled_for'))}** · "
+                f"{status[0]} **{_hhmm(task.get('scheduled_for'))}** · "
                 f"{PROVIDER_LABEL.get(task.get('provider'), task.get('provider'))}"
+                f" · {status[1]}"
             )
     else:
         for event in record.get("events") or []:
             lines.append(
                 f"⏳ **{_hhmm(event.get('at'))}** · "
                 f"{PROVIDER_LABEL.get(event.get('agent'), event.get('agent'))}"
+                " · 未执行"
             )
     return _card(
         "额度管家：当前计划",
         lines,
-        [_button("取消计划", "danger", _callback("cancel_schedule"))],
+        [_button("取消所有计划", "danger", _callback("cancel_schedule"))],
     )
 
 
@@ -601,6 +604,14 @@ def _button(text: str, button_type: str, value: Dict[str, Any]):
 
 def _callback(action: str, **fields):
     return {"cmd": "quota", "action": action, **fields}
+
+
+def _task_status_text(status: str):
+    if status == "executed":
+        return "✅", "已执行"
+    if status == "failed":
+        return "❌", "失败"
+    return "⏳", "未执行"
 
 
 def _request_dict(request: PlanRequest):

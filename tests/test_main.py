@@ -123,6 +123,58 @@ class TestMainV3(unittest.TestCase):
         self.assertEqual(rc, 3)
         self.assertIsNone(state_mod.load(self.state_path).last_recovery_notified_windows)
 
+    @mock.patch("quota_butler.main.push_receipt")
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_pending_night_warmup_receipt_is_sent_after_quiet_hours(self, detect, receipt):
+        detect.return_value = {}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                notification_target={"chat_id": "oc_p2p", "chat_type": "p2p"},
+                active_plan={
+                    "plan_id": "p123",
+                    "plan_version": 3,
+                    "status": "active",
+                    "work_start": "2026-06-20T09:00:00",
+                    "work_end": "2026-06-20T14:00:00",
+                    "tasks": [
+                        {
+                            "provider": "codex",
+                            "scheduled_for": "2026-06-20T06:30:00",
+                            "status": "executed",
+                        },
+                        {
+                            "provider": "codex",
+                            "scheduled_for": "2026-06-20T11:30:00",
+                            "status": "pending",
+                        },
+                    ],
+                },
+                pending_warmup_receipts=[
+                    {
+                        "key": "p123:codex:2026-06-20T06:30:00:executed",
+                        "plan_id": "p123",
+                        "provider": "codex",
+                        "scheduled_for": "2026-06-20T06:30:00",
+                        "status": "executed",
+                    }
+                ],
+            ),
+        )
+        with open(self.config_path, "w", encoding="utf-8") as stream:
+            stream.write(f"state_path: {self.state_path}\nfeishu:\n  chat_id: ''\n")
+
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 20, 8, 15, tzinfo=LOCAL),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("06:30 的预热已完成", receipt.call_args.args[0])
+        self.assertIn("下一次预热：11:30", receipt.call_args.args[0])
+        self.assertEqual(receipt.call_args.args[1].feishu.chat_id, "oc_p2p")
+        self.assertIsNone(state_mod.load(self.state_path).pending_warmup_receipts)
+
     @mock.patch("quota_butler.main.push_interactive")
     @mock.patch("quota_butler.main.detect_agents")
     def test_recovery_during_23_to_08_quiet_hours_is_not_sent(self, detect, push):

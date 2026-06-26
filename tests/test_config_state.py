@@ -61,6 +61,7 @@ class TestState(unittest.TestCase):
                 last_warmed_windows={"cc": "cc:w1"},
                 last_bedtime_prompt_date="2026-06-19",
                 notification_target={"chat_id": "oc_p2p", "chat_type": "p2p"},
+                pending_warmup_receipts=[{"provider": "codex", "status": "executed"}],
             )
             state_mod.save(path, st)
             loaded = state_mod.load(path)
@@ -68,6 +69,7 @@ class TestState(unittest.TestCase):
             self.assertEqual(loaded.last_warmed_windows["cc"], "cc:w1")
             self.assertEqual(loaded.last_bedtime_prompt_date, "2026-06-19")
             self.assertEqual(loaded.notification_target["chat_id"], "oc_p2p")
+            self.assertEqual(loaded.pending_warmup_receipts[0]["provider"], "codex")
 
     def test_missing_returns_empty(self):
         st = state_mod.load("/nonexistent/state.json")

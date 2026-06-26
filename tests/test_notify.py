@@ -254,11 +254,27 @@ class TestPlanningCards(unittest.TestCase):
     def test_active_plan_card_shows_pending_nodes_and_cancel(self):
         record = plan_record(self.plan)
         record["status"] = "active"
-        record["tasks"] = [{"provider": "cc", "scheduled_for": record["events"][0]["at"]}]
+        record["tasks"] = [
+            {
+                "provider": "cc",
+                "scheduled_for": record["events"][0]["at"],
+                "status": "executed",
+            },
+            {
+                "provider": "cc",
+                "scheduled_for": record["events"][1]["at"],
+                "status": "pending",
+            },
+        ]
 
         card = build_active_plan_card(record)
+        text = _markdown(card)
 
-        self.assertIn("06:30", _markdown(card))
+        self.assertIn("06:30", text)
+        self.assertIn("已执行", text)
+        self.assertIn("11:30", text)
+        self.assertIn("未执行", text)
+        self.assertIn("取消所有计划", str(card))
         self.assertEqual(_callbacks(card)[0]["action"], "cancel_schedule")
 
 
