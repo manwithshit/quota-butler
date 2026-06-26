@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 from quota_butler import handler
@@ -316,6 +316,11 @@ class TestHandler(unittest.TestCase):
                             "provider": "cc",
                             "scheduled_for": "2099-06-20T06:30:00",
                             "status": "pending",
+                        },
+                        {
+                            "provider": "cc",
+                            "scheduled_for": "2099-06-20T11:30:00",
+                            "status": "pending",
                         }
                     ],
                 }
@@ -336,6 +341,54 @@ class TestHandler(unittest.TestCase):
         get_provider.return_value.warmup.assert_called_once_with("say hi")
         saved = state_mod.load(self.state_path).active_plan
         self.assertEqual(saved["tasks"][0]["status"], "executed")
+        self.assertIn("06:30", receipt.call_args.args[0])
+        self.assertIn("下一次预热：11:30", receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    @mock.patch("quota_butler.handler.get_provider")
+    def test_scheduled_warmup_during_quiet_hours_queues_receipt(self, get_provider, receipt):
+        from quota_butler import state as state_mod
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                active_plan={
+                    "plan_id": "p123",
+                    "plan_version": 3,
+                    "status": "active",
+                    "tasks": [
+                        {
+                            "provider": "codex",
+                            "scheduled_for": "2099-06-20T06:30:00",
+                            "status": "pending",
+                        },
+                        {
+                            "provider": "codex",
+                            "scheduled_for": "2099-06-20T11:30:00",
+                            "status": "pending",
+                        },
+                    ],
+                },
+                notification_target={"chat_id": "oc_p2p", "chat_type": "p2p"},
+            ),
+        )
+
+        with mock.patch("quota_butler.handler._is_quiet_time", return_value=True):
+            rc = handler.handle(
+                {
+                    "action": "scheduled_warmup",
+                    "plan_id": "p123",
+                    "provider": "codex",
+                    "scheduled_for": "2099-06-20T06:30:00",
+                },
+                config_path=self.config_path,
+            )
+
+        self.assertEqual(rc, 0)
+        receipt.assert_not_called()
+        saved = state_mod.load(self.state_path)
+        self.assertEqual(saved.active_plan["tasks"][0]["status"], "executed")
+        self.assertEqual(saved.pending_warmup_receipts[0]["provider"], "codex")
+        self.assertEqual(saved.pending_warmup_receipts[0]["status"], "executed")
 
     @mock.patch("quota_butler.handler.push_receipt")
     def test_recovery_snooze_records_exact_window_for_later(self, receipt):
@@ -371,6 +424,44 @@ class TestHandler(unittest.TestCase):
         )
         from quota_butler import state as state_mod
         self.assertIsNone(state_mod.load(self.state_path).active_plan)
+
+    @mock.patch("quota_butler.handler.push_active_plan_card")
+    def test_view_schedule_reconciles_unloaded_past_task_as_executed(self, push):
+        from quota_butler import state as state_mod
+        scheduled = (datetime.now() - timedelta(hours=1)).replace(microsecond=0)
+        with tempfile.NamedTemporaryFile(suffix=".plist") as plist:
+            state_mod.save(
+                self.state_path,
+                state_mod.State(
+                    active_plan={
+                        "plan_id": "p123",
+                        "plan_version": 3,
+                        "status": "active",
+                        "work_start": "2026-06-20T09:00:00",
+                        "work_end": "2026-06-20T14:00:00",
+                        "agents": ["codex"],
+                        "tasks": [
+                            {
+                                "label": "com.quota-butler.plan.p123.0",
+                                "plist_path": plist.name,
+                                "provider": "codex",
+                                "scheduled_for": scheduled.isoformat(),
+                                "status": "pending",
+                            }
+                        ],
+                    }
+                ),
+            )
+
+            with mock.patch("quota_butler.handler._loaded_launchd_labels", return_value=set()):
+                rc = handler.handle(
+                    {"action": "view_schedule"},
+                    config_path=self.config_path,
+                )
+
+        self.assertEqual(rc, 0)
+        record = push.call_args.args[0]
+        self.assertEqual(record["tasks"][0]["status"], "executed")
 
     @mock.patch("quota_butler.handler.push_receipt")
     def test_remind_only_old_callback_is_rejected(self, receipt):

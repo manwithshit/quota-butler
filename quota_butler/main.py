@@ -15,8 +15,10 @@ from .notify import (
     build_bedtime_card,
     build_recovery_card,
     push_interactive,
+    push_receipt,
 )
 from .plan_tasks import cancel_plan_tasks
+from .handler import _warmup_receipt_text
 
 DEFAULT_CONFIG = "~/.quota-butler/config.yaml"
 RECOVERY_FRESHNESS = timedelta(hours=2)
@@ -53,6 +55,8 @@ def _run_locked(cfg, *, dry_run, now):
     )
 
     try:
+        if not _is_quiet(local_now) and not cfg.muted:
+            _send_due_warmup_receipts(cfg, st, dry_run)
         if bedtime_due:
             provider = recovered[0][0] if recovered else ""
             push_interactive(
@@ -155,6 +159,19 @@ def _notification_config(cfg, st):
         cfg,
         feishu=replace(cfg.feishu, chat_id=chat_id, user_id="", message_id=""),
     )
+
+
+def _send_due_warmup_receipts(cfg, st, dry_run):
+    pending = list(st.pending_warmup_receipts or [])
+    if not pending:
+        return
+    text = "\n\n".join(
+        _warmup_receipt_text(receipt, st.active_plan or {})
+        for receipt in pending
+    )
+    push_receipt(text, _notification_config(cfg, st), dry_run=dry_run)
+    if not dry_run:
+        st.pending_warmup_receipts = None
 
 
 def _due_snoozed_recovery(st, now):

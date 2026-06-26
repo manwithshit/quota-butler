@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +16,7 @@ from . import state as state_mod
 from .agent_status import detect_agents
 from .notify import (
     NotifyError,
+    PROVIDER_LABEL,
     build_agent_control_card,
     build_manual_warmup_card,
     build_time_card,
@@ -114,6 +117,7 @@ def _handle_locked(payload, cfg, config_path, dry_run):
             if not st.active_plan:
                 _safe_receipt("当前没有生效计划", reply_cfg, dry_run)
             else:
+                _reconcile_plan_task_statuses(st.active_plan)
                 push_active_plan_card(st.active_plan, reply_cfg, dry_run=dry_run)
             return _finish(cfg, st, 0)
 
@@ -280,8 +284,9 @@ def _warmup(payload, cfg, st, dry_run):
     if provider_name not in ("cc", "codex"):
         _safe_receipt("预热工具无效", cfg, dry_run)
         return _finish(cfg, st, 4)
+    scheduled = payload.get("action") == "scheduled_warmup"
     task = None
-    if payload.get("action") == "scheduled_warmup":
+    if scheduled:
         active = st.active_plan or {}
         if active.get("plan_id") != payload.get("plan_id"):
             return _finish(cfg, st, 4)
@@ -307,15 +312,38 @@ def _warmup(payload, cfg, st, dry_run):
         if task is not None:
             task["status"] = "failed"
             task["error"] = str(exc)[:200]
-        _safe_receipt(f"❌ {provider_name} 预热失败：{exc}", cfg, dry_run)
+        if scheduled:
+            _handle_scheduled_warmup_receipt(
+                cfg,
+                st,
+                payload,
+                task,
+                "failed",
+                error=str(exc),
+                dry_run=dry_run,
+            )
+        else:
+            _safe_receipt(f"❌ {provider_name} 预热失败：{exc}", cfg, dry_run)
         return _finish(cfg, st, 3)
+    executed_at = datetime.now(timezone.utc)
     if task is not None:
         task["status"] = "executed"
-        task["executed_at"] = datetime.now(timezone.utc).isoformat()
+        task["executed_at"] = executed_at.isoformat()
         cancel_plan_tasks([task])
     if window_key:
         warmed[provider_name] = window_key
         st.last_warmed_windows = warmed
+    if scheduled:
+        _handle_scheduled_warmup_receipt(
+            cfg,
+            st,
+            payload,
+            task,
+            "executed",
+            executed_at=executed_at,
+            dry_run=dry_run,
+        )
+        return _finish(cfg, st, 0)
     _safe_receipt(
         f"✅ {provider_name} 已预热，新的额度窗口已开始",
         cfg,
@@ -324,9 +352,187 @@ def _warmup(payload, cfg, st, dry_run):
     return _finish(cfg, st, 0)
 
 
+def _handle_scheduled_warmup_receipt(
+    cfg,
+    st,
+    payload: Mapping[str, Any],
+    task,
+    status: str,
+    *,
+    error: str = "",
+    executed_at: datetime = None,
+    dry_run: bool,
+) -> None:
+    receipt = {
+        "key": _warmup_receipt_key(payload, status),
+        "plan_id": str(payload.get("plan_id") or ""),
+        "provider": str(payload.get("provider") or ""),
+        "scheduled_for": str(payload.get("scheduled_for") or ""),
+        "status": status,
+        "executed_at": (executed_at or datetime.now(timezone.utc)).isoformat(),
+    }
+    if error:
+        receipt["error"] = error[:200]
+    active = st.active_plan or {}
+    if _is_quiet_time(datetime.now().astimezone()):
+        _queue_warmup_receipt(st, receipt)
+        return
+    text = _warmup_receipt_text(receipt, active)
+    try:
+        push_receipt(text, _notification_config(cfg, st), dry_run=dry_run)
+    except NotifyError as exc:
+        print(f"[预热回执失败] {exc}", file=sys.stderr)
+        _queue_warmup_receipt(st, receipt)
+
+
+def _queue_warmup_receipt(st, receipt: Dict[str, str]) -> None:
+    pending = list(st.pending_warmup_receipts or [])
+    key = receipt.get("key")
+    if key and any(item.get("key") == key for item in pending):
+        return
+    pending.append(receipt)
+    st.pending_warmup_receipts = pending
+
+
+def _warmup_receipt_key(payload: Mapping[str, Any], status: str) -> str:
+    return ":".join(
+        [
+            str(payload.get("plan_id") or ""),
+            str(payload.get("provider") or ""),
+            str(payload.get("scheduled_for") or ""),
+            status,
+        ]
+    )
+
+
+def _warmup_receipt_text(receipt: Mapping[str, str], active_plan=None) -> str:
+    label = PROVIDER_LABEL.get(receipt.get("provider"), receipt.get("provider"))
+    scheduled = _hhmm(receipt.get("scheduled_for"))
+    if receipt.get("status") == "failed":
+        lines = [f"❌ {label} {scheduled} 的预热失败。"]
+        if receipt.get("error"):
+            lines.append(f"原因：{receipt['error']}")
+    else:
+        lines = [f"✅ {label} {scheduled} 的预热已完成。"]
+    next_time = _next_warmup_time(active_plan or {}, receipt)
+    if next_time:
+        lines.append(f"下一次预热：{next_time}。")
+    elif active_plan:
+        lines.append("今天的计划预热已全部完成。")
+    return "\n".join(lines)
+
+
+def _next_warmup_time(active_plan: Mapping[str, Any], receipt: Mapping[str, str]) -> str:
+    scheduled_for = str(receipt.get("scheduled_for") or "")
+    pending = []
+    for task in active_plan.get("tasks") or []:
+        if str(task.get("status") or "pending") != "pending":
+            continue
+        value = str(task.get("scheduled_for") or "")
+        if scheduled_for and value <= scheduled_for:
+            continue
+        pending.append(value)
+    return _hhmm(min(pending)) if pending else ""
+
+
+def _notification_config(cfg, st):
+    if cfg.feishu.message_id or cfg.feishu.chat_id or cfg.feishu.user_id:
+        return cfg
+    target = st.notification_target or {}
+    if target.get("chat_type") != "p2p":
+        return cfg
+    chat_id = str(target.get("chat_id") or "").strip()
+    if not chat_id:
+        return cfg
+    return replace(
+        cfg,
+        feishu=replace(cfg.feishu, chat_id=chat_id, user_id="", message_id=""),
+    )
+
+
+def _is_quiet_time(local_now):
+    return local_now.hour >= 23 or local_now.hour < 8
+
+
+def _hhmm(value: Any) -> str:
+    text = str(value or "")
+    return text[11:16] if "T" in text else text[:5]
+
+
 def _request_from_payload(payload: Mapping[str, Any], available_count: int):
     raw = dict(payload.get("request") or {})
     return parse_plan_request(raw, available_agent_count=available_count)
+
+
+def _reconcile_plan_task_statuses(active_plan) -> None:
+    tasks = active_plan.get("tasks") if isinstance(active_plan, dict) else None
+    if not tasks:
+        return
+    now = datetime.now().astimezone()
+    loaded = None
+    for task in tasks:
+        if str(task.get("status") or "pending") != "pending":
+            continue
+        scheduled = _parse_task_time(task.get("scheduled_for"))
+        if scheduled is None or scheduled > now:
+            continue
+        label = str(task.get("label") or "")
+        if not label:
+            continue
+        if loaded is None:
+            loaded = _loaded_launchd_labels()
+        if label in loaded:
+            continue
+        err_path = _task_log_path(task, ".err.log")
+        if err_path and os.path.exists(err_path) and os.path.getsize(err_path) > 0:
+            task["status"] = "failed"
+            task["error"] = _read_short_file(err_path)
+        else:
+            task["status"] = "executed"
+            task["executed_at"] = now.isoformat()
+            task["status_inferred"] = True
+
+
+def _parse_task_time(value):
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed.astimezone()
+
+
+def _loaded_launchd_labels():
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {
+        line.rsplit(None, 1)[-1]
+        for line in (result.stdout or "").splitlines()
+        if "com.quota-butler.plan." in line
+    }
+
+
+def _task_log_path(task, suffix: str) -> str:
+    plist = str(task.get("plist_path") or "")
+    if plist.endswith(".plist"):
+        return plist[:-6] + suffix
+    return ""
+
+
+def _read_short_file(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as stream:
+            return stream.read()[-200:]
+    except OSError:
+        return ""
 
 
 def _reply_config(cfg, payload: Mapping[str, Any]):

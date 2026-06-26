@@ -9,6 +9,7 @@
   last_action            上次回调动作（warmup / skip），便于日志追溯
   last_chat_message_id   上次离线诊断路由处理到的 message_id
   notification_target    主动提醒目标；只允许记录独立机器人私聊
+  pending_warmup_receipts 免打扰时段内完成/失败的预热结果，离开免打扰后补发
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ class State:
     last_recovery_notified_windows: Optional[Dict[str, str]] = None
     pending_recovery: Optional[Dict[str, str]] = None
     notification_target: Optional[Dict[str, str]] = None
+    pending_warmup_receipts: Optional[list] = None
 
 
 def load(path: str) -> State:
