@@ -296,8 +296,11 @@ class TestReminderAndMenuCards(unittest.TestCase):
         actions = [value["action"] for value in _callbacks(card)]
         self.assertEqual(
             actions,
-            ["query_status", "manual_warmup", "schedule_intent", "view_schedule"],
+            ["query_status", "view_schedule", "manual_warmup", "schedule_intent"],
         )
+        self.assertIn("查询额度", str(card))
+        self.assertIn("立即预热", str(card))
+        self.assertIn("设置明日计划", str(card))
 
     def test_manual_warmup_card_only_exposes_eligible_agents(self):
         card = build_manual_warmup_card(
