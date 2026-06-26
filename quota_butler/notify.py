@@ -57,6 +57,51 @@ def remaining_status(remaining: float) -> str:
     return "🔴 接近耗尽"
 
 
+def _remaining_level(remaining: float) -> str:
+    value = max(0.0, min(float(remaining), 100.0))
+    if value <= 0:
+        return "耗尽"
+    if value <= 10:
+        return "告急"
+    if value <= 30:
+        return "偏低"
+    if value <= 70:
+        return "正常"
+    return "充足"
+
+
+def _status_icon(five_remaining: float, cap_remaining: Optional[float]) -> str:
+    if cap_remaining is not None:
+        if cap_remaining <= 10:
+            return "🔴"
+        if cap_remaining <= 30 or five_remaining <= 10:
+            return "🟠"
+        if cap_remaining <= 70 or five_remaining <= 30:
+            return "🟡"
+        return "🟢"
+    if five_remaining <= 10:
+        return "🔴"
+    if five_remaining <= 30:
+        return "🟠"
+    if five_remaining <= 70:
+        return "🟡"
+    return "🟢"
+
+
+def quota_status_line(five, secondary=None) -> str:
+    """Summarize quota with the long-term cap before the short window."""
+    rem5 = 100 - five.utilization
+    if secondary:
+        cap_label = _window_label(secondary)
+        cap_remaining = 100 - secondary.utilization
+        return (
+            f"{_status_icon(rem5, cap_remaining)} "
+            f"{cap_label}{_remaining_level(cap_remaining)} · "
+            f"5 小时窗口{_remaining_level(rem5)}"
+        )
+    return f"{_status_icon(rem5, None)} 5 小时窗口{_remaining_level(rem5)}"
+
+
 def _format_reset(window) -> str:
     if window.resets_at:
         return window.resets_at.astimezone().strftime("%m-%d %H:%M")
@@ -103,18 +148,23 @@ def build_status_card(statuses: Mapping[str, AgentStatus]) -> Dict[str, Any]:
         if status.state == AgentState.CONNECTED and status.usage:
             five = status.usage.five_hour
             rem5 = 100 - five.utilization
+            secondary = status.usage.seven_day
             lines.extend(
-                [f"**{label}**", f"状态：{remaining_status(rem5)}", "", *_window_lines(five)]
+                [
+                    f"**{label}**",
+                    f"状态：{quota_status_line(five, secondary)}",
+                    "",
+                    *_window_lines(five),
+                ]
             )
             rem7 = None
-            if status.usage.seven_day:
-                secondary = status.usage.seven_day
+            if secondary:
                 rem7 = 100 - secondary.utilization
                 lines.extend(["", *_window_lines(secondary)])
-            # 木桶提示：周额度见底时，5 小时窗口再多也受其封顶。
+            # Long-term quota is the real cap; a full short window cannot bypass it.
             if rem7 is not None and rem7 < 20 and rem7 < rem5:
                 lines.append(
-                    f"⚠️ 本周额度仅剩 **{rem7:.0f}%**，是真正的上限——"
+                    f"⚠️ {_window_label(secondary)}仅剩 **{rem7:.0f}%**，是真正的上限——"
                     "5 小时窗口再充足也用不了多少。"
                 )
         elif status.state == AgentState.TOKEN_STALE:
@@ -314,7 +364,11 @@ def build_time_card(
             ],
         }
     )
-    lines = ["**选择重度使用时间**"]
+    lines = [
+        "**选择重度使用时间**",
+        "只需要选择开始时间；系统会按当前可编排工具生成预热节点。",
+        "单工具会生成接力计划，双工具可生成跨工具接力计划。",
+    ]
     if error:
         lines.extend(["", f"❌ {error}"])
     return {
@@ -338,10 +392,23 @@ def build_agent_control_card(
         if statuses.get(provider) and statuses[provider].schedulable
     ]
     if len(available) <= 1:
-        label = PROVIDER_LABEL[available[0]] if available else "可用 Agent"
+        lines = []
+        if available:
+            label = PROVIDER_LABEL[available[0]]
+            lines.append(f"当前只有 {label} 可用于编排。")
+        else:
+            lines.append("当前没有可用于编排的 AI 工具。")
+        unavailable = [
+            PROVIDER_LABEL[provider]
+            for provider in ("cc", "codex")
+            if provider not in available and statuses.get(provider)
+        ]
+        for label in unavailable:
+            lines.append(f"{label} 暂不可用。")
+        lines.extend(["", "重新检测后会按最新状态生成计划。"])
         return _card(
             "更换 AI 工具",
-            [f"当前仅检测到 {label}。", "", "重新检测后会按最新状态生成计划。"],
+            lines,
             [
                 _button(
                     "重新检测",
@@ -442,7 +509,10 @@ def _schedule_timeline_elements(plan: SchedulePlan):
         headline = md(
             f"**明天 {ws:%H:%M}–{we:%H:%M}：{first_label} 为主，{relay_label} 接力**"
         )
-        note = md(f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。")
+        note = md(
+            f"重点使用区间：**{ws:%H:%M}–{we:%H:%M}**。"
+            f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。"
+        )
     else:
         w1_end = min(max(second_warm, ws), we)
         w1_h = (w1_end - ws).total_seconds() / 3600
@@ -450,7 +520,10 @@ def _schedule_timeline_elements(plan: SchedulePlan):
         timeline.append(_seg_column(_seg_weight(w1_h), "blue-200", f"{ws:%H:%M}\n开工"))
         timeline.append(_seg_column(_seg_weight(w2_h), "blue-200", f"{second_warm:%H:%M}\n续上"))
         headline = md(f"**明天 {ws:%H:%M}–{we:%H:%M}：{first_label}**")
-        note = md(f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。")
+        note = md(
+            f"重点使用区间：**{ws:%H:%M}–{we:%H:%M}**。"
+            f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。"
+        )
 
     elements = [
         headline,

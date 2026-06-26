@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd 模板 · 每 __INTERVAL__ 秒拉起一次 quota_butler.main，跑完即退。
-  占位符由 deploy/install.sh 在安装时填充，不要手动改这个文件。
-  ⚠️ EnvironmentVariables 必填两项（本机实测，env -i 复现）：
-     - PATH：launchd 默认 PATH 不含 /usr/local/bin，否则 main.py 调 lark-cli / claude
-       会 FileNotFoundError。
-     - LARK_CHANNEL：lark-cli 靠它选中"在群里的 bridge bot"；缺了会回退到默认 app，
-       报 230002 "Bot can NOT be out of the chat."（推送静默失败）。
+  LaunchAgent template.
+  deploy/install.sh fills placeholders at install time.
+  PATH and LARKSUITE_CLI_CONFIG_DIR are explicit because launchd runs with a
+  minimal environment.
 -->
 <plist version="1.0">
 <dict>
@@ -36,7 +33,7 @@
     <key>StartInterval</key>
     <integer>__INTERVAL__</integer>
 
-    <!-- 精确唤醒一次，发送 22:00 睡前计划询问；主程序自行每日去重。 -->
+    <!-- Wake once per evening; the program deduplicates daily prompts. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>

@@ -1,7 +1,7 @@
 """Legacy one-shot text classifier.
 
-The production deployment uses the private bridge and must not run this module
-as a second listener. It remains only as an offline diagnostic helper.
+The normal deployment uses an event bridge and must not run this module as a
+second listener. It remains only as an offline diagnostic helper.
 """
 
 from __future__ import annotations
@@ -31,14 +31,14 @@ class ChatMessage:
 def route_once(config_path: str, *, page_size: int = 10) -> int:
     cfg = config_mod.load(config_path)
     if not cfg.feishu.chat_id:
-        print("[群聊路由] config.feishu.chat_id 为空")
+        print("[chat-router] config.feishu.chat_id is empty")
         return 2
 
     st = state_mod.load(cfg.resolved_state_path)
     messages = _list_messages(cfg.feishu.chat_id, page_size=page_size)
     pending = _pending_user_texts(messages, st.last_chat_message_id)
     if not pending:
-        print("[群聊路由] 没有新的用户文字命令")
+        print("[chat-router] no new user text commands")
         return 0
 
     for msg in pending:
@@ -46,7 +46,7 @@ def route_once(config_path: str, *, page_size: int = 10) -> int:
         if action is None:
             st.last_chat_message_id = msg.message_id
             continue
-        print(f"[群聊路由] {msg.message_id} -> {action}")
+        print(f"[chat-router] {msg.message_id} -> {action}")
         rc = _dispatch(action, config_path)
         st.last_chat_message_id = msg.message_id
         state_mod.save(cfg.resolved_state_path, st)
@@ -58,7 +58,7 @@ def route_once(config_path: str, *, page_size: int = 10) -> int:
 
 
 def watch(config_path: str, *, interval_seconds: float = 3.0) -> int:
-    print(f"[群聊路由] watch started, interval={interval_seconds}s")
+    print(f"[chat-router] watch started, interval={interval_seconds}s")
     while True:
         route_once(config_path)
         time.sleep(interval_seconds)

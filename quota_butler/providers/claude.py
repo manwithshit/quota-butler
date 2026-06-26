@@ -63,13 +63,13 @@ class ClaudeProvider(Provider):
         except (json.JSONDecodeError, KeyError) as e:
             raise ProviderError(f"Keychain 凭据结构异常: {e}") from e
 
-        # 过期预警：MVP1 不自动刷新，只在已过期时给出明确报错
+        # Keep Claude Code refresh user-driven; warm-up should not hide login issues.
         expires_at = oauth.get("expiresAt")
         if isinstance(expires_at, (int, float)):
             now_ms = datetime.now().timestamp() * 1000
             if expires_at < now_ms:
                 raise ProviderError(
-                    "CC token 已过期（MVP1 不自动刷新）。"
+                    "CC token 已过期。"
                     "用一次 claude CLI 让它刷新 Keychain 后重试。"
                 )
         return token

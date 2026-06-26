@@ -1,79 +1,106 @@
-# Quota Butler V3
+# Quota Butler
 
-运行在用户 Mac 上、通过飞书交互的 Claude Code / Codex 额度管家。
+Quota Butler is a lightweight macOS helper for Claude Code and Codex users.
+It checks quota status, plans warm-up times, and sends interactive reminders
+through a private Feishu/Lark bot chat.
 
-V3 只做三件事：
+## What It Does
 
-1. 查询两个 Agent 的额度与登录状态。
-2. 额度窗口恢复时，在 08:00–23:00 之间询问是否立即预热。
-3. 根据明天的重度使用时间，生成可调整、可采用的预热计划。
+- Query Claude Code and Codex quota status from Feishu/Lark.
+- Show remaining quota percentage and next refresh time.
+- Trigger an immediate warm-up when you explicitly choose it.
+- Create a next-day warm-up plan from a single start time.
+- Track planned warm-ups as `pending`, `executed`, or `failed`.
+- Suppress non-urgent reminders during quiet hours and send a summary later.
 
-完整产品定义见 [docs/PRD_V3.md](docs/PRD_V3.md)。
+The bot only uses deterministic commands and card callbacks. It does not send
+your messages to a language model for chat completion.
 
-## 用户入口
+## Feishu/Lark Entry
 
-- 飞书文字：`额度`、`查看额度`、`quota`
-- 菜单：查询额度、查看当前计划、立即预热、设置明日计划
-- 每天 22:00：询问明天是否有重度使用计划
+Supported text commands:
 
-明日计划直接询问一个开始时间。计划预览会明确展示：
+- `额度`
+- `查看额度`
+- `quota`
+- `菜单`
+- `帮助`
+- `menu`
+- `help`
 
-- 工作时间与采用的 AI 工具
-- 每次预热的具体时间
-- 第一个窗口、第二个窗口或双工具接力的目的
-- 采用计划、更换 AI 工具、修改使用时间
+All plan, warm-up, and cancel actions are handled through Feishu/Lark cards.
 
-## 安全边界
+## Requirements
 
-- Token 只在内存中使用，不打印、不提交。
-- Codex 401 时最多自动刷新一次。
-- Claude 登录失效时只提示 `claude auth login`，不使用预热命令修复登录。
-- 点击“立即预热”或“采用计划”即构成最终授权，不再二次确认。
-- 计划中的每个 Agent、每个时间节点使用独立 launchd 任务。
-- 23:00–08:00 不发送额度恢复提醒。
-- 23:00–08:00 内完成的计划预热不即时打扰，离开免打扰后补发完成/失败提醒。
-- 非免打扰时段完成的计划预热会即时提醒，并带上原预热时间点。
-- 状态文件使用跨进程锁，避免轮询、按钮和定时任务互相覆盖。
+- macOS with `launchd`
+- Python 3.10+
+- Claude Code CLI and/or Codex CLI already signed in locally
+- `lark-cli` configured for a Feishu/Lark self-built app bot
+- A private bot chat with that Feishu/Lark app
 
-## 本地开发
+App credentials, access tokens, chat IDs, and local state files must stay on the
+user's machine. Do not commit them to this repository.
 
-当前实现代码放在：
-
-```text
-/Users/earonwong/重要但不同步icloud/02_项目/胡思乱想的项目/quota-butler
-```
-
-本机运行状态与配置不进仓库：
-
-- `~/.quota-butler/config.yaml`：额度管家运行配置、主动推送目标。
-- `~/.quota-butler/state.json`：额度窗口、计划任务与提醒状态。
-- `~/.lark-channel/config.json`：当前 Feishu/Lark bridge profile。
-- `~/.lark-channel/profiles/codex/`：`codex` profile 的 bridge 日志、lark-cli 投影配置与本机加密 secret。
-
-主动提醒只绑定独立机器人私聊。第一次在私聊里发送 `额度` 或点击菜单后，系统会把该私聊会话记录到 `~/.quota-butler/state.json`，后续恢复提醒和睡前卡都发到这个私聊；群聊不会被记录为主动提醒目标。
+## Quick Start
 
 ```bash
+git clone <this-repo>
+cd quota-butler
+
 mkdir -p ~/.quota-butler
 cp config.example.yaml ~/.quota-butler/config.yaml
 
 python3 -m unittest discover -s tests -v
 python3 -m quota_butler.query --dry-run
-python3 -m quota_butler.schedule --intent tomorrow --dry-run
-```
 
-`--dry-run` 不发送飞书消息，也不会执行真实预热。
-
-## 常驻服务
-
-```bash
 bash deploy/install.sh
 launchctl list | grep com.quota-butler
 ```
 
-主任务每隔 `interval_min` 分钟检查一次额度，并在每天 22:00 精确唤醒一次。卡片按钮和文字入口由现有私人 bridge fork 承接，不需要、也不应启动第二个飞书 listener。
+`--dry-run` does not send Feishu/Lark messages and does not execute real warm-ups.
 
-安装脚本默认复用 `~/.lark-channel/profiles/codex/lark-cli`，确保 launchd 主动提醒与当前 bridge 使用同一机器人身份。`~/.quota-butler/config.yaml` 里的 `feishu.chat_id` / `feishu.user_id` 建议保持为空，让私聊绑定结果作为唯一主动提醒目标。
+## Feishu/Lark Binding
 
-如果要切到新的独立机器人，更新的是本机 bridge profile 和加密 keystore，不是仓库代码；App Secret 只能留在本机加密存储里，不应写入 README、YAML、日志或 commit。
+Quota Butler records the private bot chat on first contact:
 
-私人 bridge 配置与验收见 [docs/BRIDGE_SETUP.md](docs/BRIDGE_SETUP.md)。
+1. Configure the Feishu/Lark self-built app and `lark-cli` locally.
+2. Open the private chat with the bot.
+3. Send `额度` or `菜单`.
+4. Quota Butler stores that private chat as the notification target in
+   `~/.quota-butler/state.json`.
+
+Group chats are ignored as notification targets.
+
+To replay first-contact binding for a demo, back up `~/.quota-butler/state.json`
+and remove the `notification_target` field, then send `额度` in the private bot
+chat again.
+
+## Background Service
+
+`deploy/install.sh` installs a macOS LaunchAgent named `com.quota-butler`.
+After installation, Quota Butler runs in the background; users do not need to
+keep a terminal command open.
+
+The Feishu/Lark bridge is a separate background service. Quota Butler assumes
+that bridge is already configured to receive bot messages and forward card
+callbacks to:
+
+```bash
+python3 -m quota_butler.handler --config ~/.quota-butler/config.yaml
+```
+
+## Local Files
+
+Runtime files are intentionally outside the repository:
+
+- `~/.quota-butler/config.yaml`
+- `~/.quota-butler/state.json`
+- `~/.quota-butler/plan-tasks/`
+- the local Feishu/Lark CLI profile
+- Claude Code and Codex auth files
+
+## Uninstall
+
+```bash
+bash deploy/uninstall.sh
+```
