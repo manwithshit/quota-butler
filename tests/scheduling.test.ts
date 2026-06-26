@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { usableForPlanning } from '../src/agent_status.js';
-import { activePlanIndex, planIsExpired, type State } from '../src/state.js';
+import { activePlanIndex, planIsExpired, StateStore, type State } from '../src/state.js';
 import { buildCurrentPlansCard, buildManualWarmupCard } from '../src/notify.js';
 import { AgentState, type AgentStatus } from '../src/agent_status.js';
 import { buildPlan } from '../src/planner.js';
 import type { Usage } from '../src/providers/index.js';
 import type { PlanRequest } from '../src/schedule_flow.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { handleAction } from '../src/handler.js';
 
 function u(util5: number, util7?: number): Usage {
   return {
@@ -81,6 +84,42 @@ describe('current plans and immediate warmup UX', () => {
     expect(text).toContain('明日计划');
     expect(text).toContain('09:00–16:31');
     expect(text).toContain('10:00–17:31');
+  });
+
+  it('cancels a tomorrow plan whenever the current-plan card offers that cancel button', async () => {
+    const state = new StateStore(join(tmpdir(), `qb-cancel-${Date.now()}-${Math.random()}.json`));
+    const tomorrow = new Date(Date.now() + 24 * 3600000);
+    tomorrow.setHours(9, 0, 0, 0);
+    const targetDate = tomorrow.toISOString().slice(0, 10);
+    const warmup = new Date(tomorrow.getTime() - 90 * 60000).toISOString();
+    state.get().plansByDate[targetDate] = {
+      status: 'active',
+      plan_id: 'tomorrow',
+      work_start: tomorrow.toISOString(),
+      work_end: new Date(tomorrow.getTime() + 6 * 3600000).toISOString(),
+      agents: ['codex'],
+      events: [{ agent: 'codex', at: warmup, purpose: '准备第一个窗口' }],
+    };
+
+    const card = buildCurrentPlansCard({ [targetDate]: state.get().plansByDate[targetDate]! }, new Date());
+    const text = JSON.stringify(card);
+    expect(text).toContain('取消明日计划');
+    expect(text).toContain('未执行');
+
+    const receipts: string[] = [];
+    await handleAction(
+      { action: 'cancel_schedule', target_date: targetDate },
+      {
+        state,
+        send: async () => {},
+        receipt: async (message) => {
+          receipts.push(message);
+        },
+      },
+    );
+
+    expect(receipts).toEqual(['✅ 已取消计划，未执行任务已删除']);
+    expect(state.get().plansByDate[targetDate]).toBeUndefined();
   });
 
   it('immediate warmup no-op card stays terse when nothing can warm up now', () => {

@@ -34,4 +34,19 @@ describe('WarmupScheduler.arm', () => {
     sch.cancelAll();
     expect(sch.pending).toBe(0);
   });
+
+  it('arms legacy warmup events that do not have a kind field', () => {
+    const state = tmpState();
+    const sch = new WarmupScheduler(fakeChannel, 'ou_x', state);
+    const future = new Date(Date.now() + 3600000).toISOString();
+
+    sch.arm({
+      plan_id: 'legacy',
+      status: 'active',
+      events: [{ agent: 'cc', at: future, purpose: '' }],
+    });
+
+    expect(sch.pending).toBe(1);
+    sch.cancelAll();
+  });
 });
