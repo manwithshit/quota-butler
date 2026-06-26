@@ -125,6 +125,29 @@
       font-size: 28px;
     }
 
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 26px;
+      padding: 10px 14px 10px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: 0 16px 36px rgba(20, 32, 50, 0.08);
+      color: #303642;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .logo-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 11px;
+      object-fit: cover;
+      background: #fff;
+    }
+
     .hero-image {
       position: absolute;
       right: 0;
@@ -163,21 +186,6 @@
     .panel p {
       font-size: 20px;
       line-height: 1.45;
-    }
-
-    .flow-wrap {
-      display: grid;
-      grid-template-columns: 0.95fr 1.05fr;
-      gap: 34px;
-      align-items: center;
-      height: 100%;
-    }
-
-    .flow-image {
-      width: 100%;
-      border-radius: 24px;
-      border: 1px solid var(--line);
-      box-shadow: 0 20px 50px rgba(20, 32, 50, 0.12);
     }
 
     .list {
@@ -221,11 +229,47 @@
       line-height: 1.35;
     }
 
-    .install {
+    .scenario-grid {
       display: grid;
-      grid-template-columns: 0.9fr 1.1fr;
-      gap: 34px;
-      align-items: stretch;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px;
+      margin-top: 36px;
+    }
+
+    .scenario {
+      min-height: 168px;
+      padding: 26px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.78);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 46px rgba(20, 32, 50, 0.08);
+    }
+
+    .scenario b {
+      display: block;
+      font-size: 25px;
+      line-height: 1.2;
+      margin-bottom: 14px;
+    }
+
+    .scenario p {
+      font-size: 20px;
+      line-height: 1.42;
+    }
+
+    .channel-note {
+      margin-top: 26px;
+      padding: 22px 26px;
+      border-radius: 22px;
+      background: #111318;
+      color: #fff;
+      font-size: 24px;
+      font-weight: 740;
+      box-shadow: 0 24px 64px rgba(17, 19, 24, 0.20);
+    }
+
+    .install {
+      display: block;
       margin-top: 42px;
     }
 
@@ -251,10 +295,11 @@
     }
 
     .prompt {
-      background: rgba(255, 255, 255, 0.82);
+      margin-top: 24px;
+      background: rgba(255, 255, 255, 0.86);
       border: 1px solid var(--line);
       border-radius: 24px;
-      padding: 28px;
+      padding: 30px;
     }
 
     .prompt b {
@@ -264,7 +309,8 @@
     }
 
     .prompt p {
-      font-size: 20px;
+      font-size: 22px;
+      line-height: 1.5;
       color: #333842;
     }
 
@@ -305,9 +351,12 @@
       <img class="hero-image" src="assets/product-hero.png" alt="" />
       <div class="content">
         <div class="hero-copy">
-          <div class="kicker">Quota Butler</div>
-          <h1>我们做这个功能</h1>
-          <p>把 Claude Code 和 Codex 的额度状态、预热计划、完成提醒，收进一个飞书私聊机器人里。</p>
+          <div class="hero-badge">
+            <img class="logo-mark" src="assets/feishu-logo.png" alt="飞书" />
+            <span>飞书里的 AI 额度助手</span>
+          </div>
+          <h1>额度管家</h1>
+          <p>在飞书里看额度、排预热、收提醒，把 Claude Code 和 Codex 的可用时间安排到真正工作的时刻。</p>
         </div>
       </div>
     </section>
@@ -315,19 +364,19 @@
     <section class="slide">
       <div class="content">
         <div class="kicker">Pain Point</div>
-        <h2>不是额度不够，而是额度总在错误的时间恢复。</h2>
+        <h2>核心痛点：怎样最大化利用已经付费的 AI 额度。</h2>
         <div class="grid">
           <div class="panel">
             <b>看不见</b>
-            <p>5 小时窗口、周额度、刷新时间分散在不同入口，真正要工作时才发现快用完。</p>
+            <p>5 小时窗口、周额度、刷新时间散在不同地方，真正开工时才发现关键额度已经见底。</p>
           </div>
           <div class="panel">
             <b>容易错过</b>
-            <p>凌晨恢复、早上开工、下午接力，各自都需要记时间，靠人脑很难稳定。</p>
+            <p>额度常在凌晨、开工前或会议中恢复；人没有盯着，就很容易白白错过可用窗口。</p>
           </div>
           <div class="panel">
-            <b>切换成本高</b>
-            <p>Claude Code 和 Codex 都能用，但谁先上、谁接力、什么时候预热，需要系统帮忙算清楚。</p>
+            <b>不在电脑前</b>
+            <p>需要安排预热时，人可能在路上、在开会、只拿着手机；最顺手的入口应该就在飞书。</p>
           </div>
         </div>
       </div>
@@ -335,46 +384,42 @@
 
     <section class="slide">
       <div class="content">
-        <div class="flow-wrap">
-          <div>
-            <div class="kicker">How It Works</div>
-            <h2>一个私聊入口，四个核心动作。</h2>
-            <div class="list">
-              <div class="item">
-                <div class="num">1</div>
-                <div><b>查询额度</b><span>直接看还剩多少、什么时候刷新。</span></div>
-              </div>
-              <div class="item">
-                <div class="num">2</div>
-                <div><b>立即预热</b><span>手动触发一次真实预热，不创建长期计划。</span></div>
-              </div>
-              <div class="item">
-                <div class="num">3</div>
-                <div><b>设置明日计划</b><span>只选开始时间，系统自动安排预热节点。</span></div>
-              </div>
-              <div class="item">
-                <div class="num">4</div>
-                <div><b>查看当前计划</b><span>展示未执行、已执行、失败，并可取消所有计划。</span></div>
-              </div>
-            </div>
+        <div class="kicker">How It Helps</div>
+        <h2>从飞书私聊，把额度变成可安排的工作时间。</h2>
+        <div class="scenario-grid">
+          <div class="scenario">
+            <b>开工前先看清楚</b>
+            <p>直接知道 Claude Code / Codex 还剩多少，以及下一次什么时候刷新。</p>
           </div>
-          <img class="flow-image" src="assets/product-flow.png" alt="额度管家产品流程图" />
+          <div class="scenario">
+            <b>需要时立刻续上</b>
+            <p>临时想用就立即预热一次，不必创建长期计划，也不用切到电脑前操作。</p>
+          </div>
+          <div class="scenario">
+            <b>明天重度使用</b>
+            <p>只告诉它开工时间，系统帮你排好预热节点，让可用窗口尽量贴近工作节奏。</p>
+          </div>
+          <div class="scenario">
+            <b>过程随时可追踪</b>
+            <p>查看已执行、未执行、失败和下一次预热；不需要了，就取消所有计划。</p>
+          </div>
         </div>
+        <div class="channel-note">唯一沟通渠道：飞书独立机器人私聊。</div>
       </div>
     </section>
 
     <section class="slide">
       <div class="content">
         <div class="kicker">Install</div>
-        <h2>截图发给你的 Agent，让它直接安装。</h2>
+        <h2>如何安装</h2>
         <div class="install">
           <div class="install-card">
             <div class="label">GitHub</div>
-            <div class="url">https://github.com/manwithshit/quota-butler</div>
+            <div class="url">manwithshit/quota-butler</div>
           </div>
           <div class="prompt">
-            <b>给 Agent 的中文 Prompt</b>
-            <p>请打开这个 GitHub 项目，帮我在 Mac 上安装并配置额度管家。目标是通过飞书独立机器人私聊查询 Claude Code / Codex 额度、设置明日预热计划，并在预热完成后提醒我。请先阅读 README 和 deploy/install.sh，再一步步引导我填写本机配置。不要把 App Secret、Token 或本机状态文件写进仓库或聊天记录。</p>
+            <b>给 AI Agent 的中文提示词</b>
+            <p>请在 GitHub 搜索 manwithshit/quota-butler，帮我在 Mac 上安装并配置额度管家。目标是通过飞书独立机器人私聊查询 Claude Code / Codex 额度、设置明日预热计划，并在预热完成后提醒我。请先阅读 README 和 deploy/install.sh，再一步步引导我完成本机配置。不要把 App Secret、Token 或本机状态文件写进仓库或聊天记录。</p>
           </div>
         </div>
       </div>
