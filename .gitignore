@@ -1,7 +1,6 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
+node_modules/
+dist/
+.cache/
 
 # Local config, state, and credentials
 config.yaml
@@ -19,7 +18,6 @@ quota-butler.err.log
 .codex/
 .lark-channel/
 .quota-butler/
-.pytest_cache/
 
 # macOS and local workspace clutter
 .DS_Store
