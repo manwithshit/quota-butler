@@ -51,7 +51,20 @@ class AgentStatus:
 
     @property
     def schedulable(self) -> bool:
-        return self.plan_eligible
+        if not self.queryable:
+            return False
+        window = self.usage.five_hour
+        has_five_hour = (
+            window.kind == "five_hour" or window.window_seconds == 5 * 3600
+        )
+        if not has_five_hour:
+            return False
+        weekly = self.usage.seven_day
+        if weekly and (
+            weekly.kind == "weekly" or weekly.window_seconds == 7 * 24 * 3600
+        ):
+            return weekly.utilization < 100
+        return True
 
 
 def find_agent_executable(provider: str) -> Optional[str]:

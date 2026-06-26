@@ -29,6 +29,7 @@ def _connected(
     window_seconds=5 * 3600,
     kind="five_hour",
     weekly_utilization=None,
+    utilization=20,
 ):
     weekly = None
     if weekly_utilization is not None:
@@ -42,7 +43,7 @@ def _connected(
         provider,
         AgentState.CONNECTED,
         executable=f"/usr/local/bin/{provider}",
-        usage=Usage(provider, WindowUsage(20, None, window_seconds, kind), weekly),
+        usage=Usage(provider, WindowUsage(utilization, None, window_seconds, kind), weekly),
     )
 
 
@@ -156,6 +157,33 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(rc, 0)
         plan = push.call_args.args[0]
         self.assertEqual(plan.agents, ("codex",))
+
+    @mock.patch("quota_butler.handler.push_schedule_card")
+    @mock.patch("quota_butler.handler.detect_agents")
+    def test_generate_plan_allows_five_hour_exhausted_codex_when_weekly_available(
+        self, detect, push
+    ):
+        detect.return_value = {
+            "cc": _connected("cc", weekly_utilization=100),
+            "codex": _connected("codex", weekly_utilization=50, utilization=100),
+        }
+
+        rc = handler.handle(
+            {
+                "action": "schedule_flow",
+                "flow_version": FLOW_VERSION,
+                "step": "generate_plan",
+                "target_date": _request()["target_date"],
+                "request": _request(),
+                "form_value": {"work_start": "13:00"},
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        plan = push.call_args.args[0]
+        self.assertEqual(plan.agents, ("codex",))
+        self.assertEqual(plan.work_start.strftime("%H:%M"), "13:00")
 
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.detect_agents")

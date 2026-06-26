@@ -19,6 +19,8 @@ from .notify import (
 )
 from .plan_tasks import cancel_plan_tasks
 from .handler import _warmup_receipt_text
+from .providers import get_provider
+from .providers.base import ProviderError
 
 DEFAULT_CONFIG = "~/.quota-butler/config.yaml"
 RECOVERY_FRESHNESS = timedelta(hours=2)
@@ -43,6 +45,7 @@ def _run_locked(cfg, *, dry_run, now):
         now = now.replace(tzinfo=timezone.utc)
     local_now = now.astimezone()
     _migrate_and_expire(st, now)
+    _run_due_plan_warmups(cfg, st, now, dry_run=dry_run)
 
     statuses = detect_agents()
     recovered = _newly_recovered(statuses, st, now)
@@ -172,6 +175,66 @@ def _send_due_warmup_receipts(cfg, st, dry_run):
     push_receipt(text, _notification_config(cfg, st), dry_run=dry_run)
     if not dry_run:
         st.pending_warmup_receipts = None
+
+
+def _run_due_plan_warmups(cfg, st, now, *, dry_run):
+    active = st.active_plan or {}
+    if active.get("status") != "active":
+        return
+    plan_id = str(active.get("plan_id") or "")
+    for task in active.get("tasks") or []:
+        if str(task.get("status") or "pending") != "pending":
+            continue
+        scheduled = _parse_plan_time(task.get("scheduled_for"), now)
+        if scheduled is None or scheduled > now.astimezone(scheduled.tzinfo):
+            continue
+        provider = str(task.get("provider") or "")
+        if dry_run:
+            continue
+        receipt = {
+            "key": ":".join(
+                [plan_id, provider, str(task.get("scheduled_for") or ""), "executed"]
+            ),
+            "plan_id": plan_id,
+            "provider": provider,
+            "scheduled_for": str(task.get("scheduled_for") or ""),
+            "status": "executed",
+            "executed_at": now.isoformat(),
+        }
+        try:
+            get_provider(provider).warmup(cfg.warmup_prompt)
+        except (ProviderError, NotImplementedError) as exc:
+            task["status"] = "failed"
+            task["error"] = str(exc)[:200]
+            receipt["key"] = ":".join(
+                [plan_id, provider, str(task.get("scheduled_for") or ""), "failed"]
+            )
+            receipt["status"] = "failed"
+            receipt["error"] = str(exc)[:200]
+        else:
+            task["status"] = "executed"
+            task["executed_at"] = now.isoformat()
+            cancel_plan_tasks([task])
+        _queue_warmup_receipt(st, receipt)
+
+
+def _queue_warmup_receipt(st, receipt):
+    pending = list(st.pending_warmup_receipts or [])
+    key = receipt.get("key")
+    if key and any(item.get("key") == key for item in pending):
+        return
+    pending.append(receipt)
+    st.pending_warmup_receipts = pending
+
+
+def _parse_plan_time(value, now):
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=now.astimezone().tzinfo)
+    return parsed.astimezone()
 
 
 def _due_snoozed_recovery(st, now):
