@@ -1,29 +1,29 @@
-# 额度管家 quota-butler · 配置示例
-# 复制到 ~/.quota-butler/config.yaml 后按需修改。
-# 装了 PyYAML 用标准 YAML；没装也能跑（内置极简解析，仅支持本文件这种简单结构）。
+# Quota Butler config example.
+# Copy to ~/.quota-butler/config.yaml and edit locally.
+# PyYAML is optional; the built-in fallback supports this simple shape.
 
-# launchd 拉起间隔（分钟）。仅作记录；真实间隔在 plist 里设。
-# 15 分钟足够判断额度窗口是否刚刚恢复。
+# launchd polling interval in minutes.
 interval_min: 15
 
-# 预热消息内容（越短越省）。
+# Warm-up prompt. Keep it short.
 warmup_prompt: say hi
 
-# 采用计划后生成的 launchd 任务文件目录。
+# Directory for per-plan LaunchAgent plist files.
 plan_tasks_dir: ~/.quota-butler/plan-tasks
 
-# 静音：true 时只感知+判断，不推送（调试用）。
+# Debug switch: true means detect only, without sending messages.
 muted: false
 
-# V3 固定在 23:00–08:00 不主动打扰。这里保留兼容读取，但不建议修改。
+# Quiet hours for non-urgent reminders.
 quiet_hours:
   start: "23:00"
   end: "08:00"
 
-# 状态文件路径。
+# Runtime state path.
 state_path: ~/.quota-butler/state.json
 
-# 飞书推送目标。chat_id 优先；没填 chat_id 则用 user_id 私聊。
+# Feishu/Lark message target.
+# Usually leave these empty and let the first private bot chat bind itself.
 feishu:
-  chat_id: oc_xxxxxxxxxxxxxxxx
+  chat_id: ""
   user_id: ""

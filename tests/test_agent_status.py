@@ -77,7 +77,7 @@ class TestAgentStatus(unittest.TestCase):
         # = 缓存令牌过期可刷新，不是登出，更不是未安装。
         find_executable.return_value = "/usr/local/bin/claude"
         get_provider.return_value.read_usage.side_effect = ProviderError(
-            "CC token 已过期（MVP1 不自动刷新）"
+            "CC token 已过期"
         )
 
         status = detect_agents(("cc",))["cc"]

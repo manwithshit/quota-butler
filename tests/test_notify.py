@@ -74,6 +74,7 @@ class TestStatusCard(unittest.TestCase):
 
         self.assertIn("Claude Code", text)
         self.assertIn("████░░░░░░ 还剩 **37%**", text)
+        self.assertIn("状态：🟡 5 小时窗口正常", text)
         self.assertIn("Codex", text)
         self.assertIn("暂时无法读取", text)
         self.assertNotIn("未检测到安装", text)
@@ -93,7 +94,8 @@ class TestStatusCard(unittest.TestCase):
         self.assertIn("还剩 **1%**", text)     # 周额度
         self.assertIn("7 天额度", text)
         self.assertIn("刷新：**", text)
-        self.assertIn("本周额度仅剩", text)     # 木桶警告
+        self.assertIn("状态：🔴 7 天额度告急 · 5 小时窗口充足", text)
+        self.assertIn("7 天额度仅剩", text)     # 木桶警告
         self.assertIn("真正的上限", text)
 
     def test_status_card_labels_codex_free_monthly_window(self):
@@ -247,7 +249,7 @@ class TestPlanningCards(unittest.TestCase):
         text = _markdown(card)
         callbacks = _callbacks(card)
 
-        self.assertIn("当前仅检测到 Claude Code", text)
+        self.assertIn("当前只有 Claude Code 可用于编排", text)
         self.assertIn("AI 工具", str(card))
         self.assertEqual([value["action"] for value in callbacks], ["redetect_agents"])
 

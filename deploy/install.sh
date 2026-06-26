@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 安装 quota-butler 的 launchd 定时任务。
-# 用法：bash deploy/install.sh
+# Install Quota Butler as a macOS LaunchAgent.
+# Usage: bash deploy/install.sh
 #
-# 它做的事：
-#   1. 解析 python3 / lark-cli / claude 的真实路径，拼出 launchd 需要的 PATH
-#   2. 从 ~/.quota-butler/config.yaml 读 interval_min（没有就默认 15 分钟）
-#   3. 用模板生成 ~/Library/LaunchAgents/com.quota-butler.plist
-#   4. load 进 launchd（先 unload 旧的，幂等）
+# This script:
+#   1. Resolves python3, lark-cli, claude, and codex paths for launchd.
+#   2. Reads interval_min from ~/.quota-butler/config.yaml.
+#   3. Generates ~/Library/LaunchAgents/com.quota-butler.plist.
+#   4. Reloads the LaunchAgent idempotently.
 set -euo pipefail
 
 LABEL="com.quota-butler"
@@ -15,26 +15,26 @@ TEMPLATE="$REPO/deploy/${LABEL}.plist.template"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 CONFIG="$HOME/.quota-butler/config.yaml"
 
-# --- 1. 解析可执行路径 ----------------------------------------------------
+# --- 1. Resolve executable paths -----------------------------------------
 PYTHON="$(command -v python3 || true)"
-[ -z "$PYTHON" ] && { echo "✗ 找不到 python3"; exit 1; }
+[ -z "$PYTHON" ] && { echo "✗ python3 not found"; exit 1; }
 
-# launchd PATH：把 python3 / lark-cli / claude / codex 所在目录都并进去 + 系统默认
+# launchd has a minimal PATH, so include known tool directories explicitly.
 collect_dir() { command -v "$1" 2>/dev/null | xargs -I{} dirname {} 2>/dev/null || true; }
 DIRS="$(printf '%s\n%s\n%s\n%s\n/usr/local/bin\n/usr/bin\n/bin' \
         "$(dirname "$PYTHON")" "$(collect_dir lark-cli)" "$(collect_dir claude)" \
         "$(collect_dir codex)" \
         | awk 'NF && !seen[$0]++' | paste -sd: -)"
 
-command -v lark-cli >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 lark-cli —— 推送会失败，确认它在 $DIRS 里"
-command -v claude   >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 claude —— 预热会失败"
-command -v codex    >/dev/null 2>&1 || echo "⚠️  当前 shell 找不到 codex —— 预热会失败"
+command -v lark-cli >/dev/null 2>&1 || echo "⚠️  lark-cli not found in current shell; message sending may fail"
+command -v claude   >/dev/null 2>&1 || echo "⚠️  claude not found in current shell; Claude Code warm-up may fail"
+command -v codex    >/dev/null 2>&1 || echo "⚠️  codex not found in current shell; Codex warm-up may fail"
 
-# lark-cli 靠 LARK_CHANNEL 选中"在群里的 bridge bot"；从当前 shell 继承，默认 1
+# Preserve lark-cli profile selection for users who rely on it.
 LARK_CHANNEL_VAL="${LARK_CHANNEL:-1}"
 LARK_CLI_CONFIG_DIR="${LARKSUITE_CLI_CONFIG_DIR:-$HOME/.lark-channel/profiles/codex/lark-cli}"
 
-# --- 2. 读 interval（分钟 → 秒）------------------------------------------
+# --- 2. Read interval -----------------------------------------------------
 INTERVAL_MIN=15
 if [ -f "$CONFIG" ]; then
     v="$(awk -F: '/^interval_min:/{gsub(/[ \t#].*/,"",$2); print $2}' "$CONFIG" | head -1)"
@@ -42,7 +42,7 @@ if [ -f "$CONFIG" ]; then
 fi
 INTERVAL_SEC=$(( INTERVAL_MIN * 60 ))
 
-# --- 3. 生成 plist --------------------------------------------------------
+# --- 3. Generate plist ----------------------------------------------------
 mkdir -p "$HOME/Library/LaunchAgents"
 sed -e "s#__PYTHON__#${PYTHON}#g" \
     -e "s#__REPO__#${REPO}#g" \
@@ -52,17 +52,17 @@ sed -e "s#__PYTHON__#${PYTHON}#g" \
     -e "s#__INTERVAL__#${INTERVAL_SEC}#g" \
     "$TEMPLATE" > "$PLIST"
 
-# --- 4. load（幂等）------------------------------------------------------
+# --- 4. Reload LaunchAgent -----------------------------------------------
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 
-echo "✓ 已安装 $LABEL"
+echo "✓ Installed $LABEL"
 echo "  plist:    $PLIST"
 echo "  python:   $PYTHON"
 echo "  PATH:     $DIRS"
 echo "  lark-cli: $LARK_CLI_CONFIG_DIR"
-echo "  间隔:     ${INTERVAL_MIN} 分钟（${INTERVAL_SEC}s）"
-echo "  日志:     $REPO/quota-butler.log / .err.log"
+echo "  interval: ${INTERVAL_MIN} min (${INTERVAL_SEC}s)"
+echo "  logs:     $REPO/quota-butler.log / .err.log"
 echo
-echo "查看状态：  launchctl list | grep $LABEL"
-echo "卸载：      bash deploy/uninstall.sh"
+echo "Status:    launchctl list | grep $LABEL"
+echo "Uninstall: bash deploy/uninstall.sh"

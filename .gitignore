@@ -2,10 +2,25 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-# 本地配置 / 状态绝不入库（含 chat_id 等）
+
+# Local config, state, and credentials
 config.yaml
 state.json
 *.local.yaml
+*.enc
+
+# Runtime outputs
 *.log
+quota-butler.log
+quota-butler.err.log
+
+# Local tool state
+.claude/
+.codex/
+.lark-channel/
+.quota-butler/
+.pytest_cache/
+
+# macOS and local workspace clutter
 .DS_Store
 .worktrees/
