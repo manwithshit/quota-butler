@@ -49,46 +49,28 @@ def build_plan(
     end = _combine(request, request.work_end)
     if end <= start:
         raise ValueError("工作结束时间必须晚于开始时间")
-    selected = _select_agents(
-        request.agent_strategy,
-        available_usages,
-        (end - start).total_seconds() / 3600,
-    )
+    selected = _select_agents(request.agent_strategy, available_usages)
 
     first_agent = selected[0]
-    first_warmup = start - timedelta(hours=2, minutes=30)
-    second_warmup = _real_reset_in_range(
-        available_usages[first_agent],
-        start,
-        end,
-    ) or first_warmup + timedelta(hours=5)
+    first_warmup = (
+        _combine(request, request.first_warmup)
+        if request.first_warmup
+        else start - timedelta(hours=2, minutes=30)
+    )
+    second_warmup = (
+        _combine(request, request.second_warmup)
+        if request.second_warmup
+        else first_warmup + timedelta(hours=5, minutes=1)
+    )
     events: List[PlanEvent] = [
         PlanEvent(first_agent, "warmup", first_warmup, "准备第一个窗口"),
         PlanEvent(first_agent, "warmup", second_warmup, "恢复后准备第二个窗口"),
     ]
 
-    if len(selected) == 2:
-        relay_agent = selected[1]
-        relay_at = max(start + timedelta(hours=5) - timedelta(minutes=10), start)
-        if relay_at < end:
-            # 垫窗：在交接点往前推 5 小时先给接力 Agent 预热一次，
-            # 让它的额度窗口刚好在交接点（relay_at）准点刷新，无缝顶上。
-            pre_pin_at = relay_at - timedelta(hours=5)
-            events.append(
-                PlanEvent(relay_agent, "warmup", pre_pin_at, "提前垫好接力窗口")
-            )
-            events.append(
-                PlanEvent(relay_agent, "warmup", relay_at, "接力刷新，无缝顶上")
-            )
-        reason = (
-            f"前半段优先保持 {AGENT_LABELS[first_agent]} 连续工作，"
-            f"后半段由 {AGENT_LABELS[relay_agent]} 接力。"
-        )
-    else:
-        reason = (
-            f"当前区间只使用 {AGENT_LABELS[first_agent]}，"
-            "减少上下文切换。"
-        )
+    reason = (
+        f"当前计划只使用 {AGENT_LABELS[first_agent]}，"
+        "用两次预热最大化单一工具的可用窗口。"
+    )
     events.sort(key=lambda item: (item.at, item.agent))
     return SchedulePlan(
         agents=selected,
@@ -118,7 +100,6 @@ def parse_agents(value: object) -> Tuple[str, ...]:
 def _select_agents(
     strategy: str,
     usages: Mapping[str, Usage],
-    work_hours: float,
 ) -> Tuple[str, ...]:
     available = tuple(agent for agent in SUPPORTED_AGENTS if agent in usages)
     if not available:
@@ -128,12 +109,8 @@ def _select_agents(
             raise ValueError(f"{AGENT_LABELS[strategy]} 当前不可用")
         return (strategy,)
     if strategy == "both":
-        if len(available) < 2:
-            raise ValueError("Claude Code + Codex 当前不能同时使用")
-        return _rank_agents(available, usages)
+        raise ValueError("当前流程一次只编排一个 AI 工具")
     ranked = _rank_agents(available, usages)
-    if work_hours > 5 and len(ranked) > 1:
-        return ranked
     return (ranked[0],)
 
 
@@ -160,21 +137,6 @@ def _weekly_utilization(usage: Usage) -> float:
     ):
         return weekly.utilization
     return 0.0
-
-
-def _real_reset_in_range(
-    usage: Usage,
-    start: datetime,
-    end: datetime,
-):
-    reset = usage.five_hour.resets_at
-    if reset is None:
-        return None
-    if reset.tzinfo is not None:
-        reset = reset.astimezone().replace(tzinfo=None)
-    if start <= reset <= end:
-        return reset
-    return None
 
 
 def _combine(request: PlanRequest, hhmm: str) -> datetime:

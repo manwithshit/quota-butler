@@ -130,7 +130,7 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(plan.work_start.strftime("%H:%M"), "12:00")
         self.assertEqual(
             [event.at.strftime("%H:%M") for event in plan.events],
-            ["09:30", "14:30"],
+            ["09:30", "14:31"],
         )
 
     @mock.patch("quota_butler.handler.push_schedule_card")
@@ -181,7 +181,7 @@ class TestHandler(unittest.TestCase):
 
     @mock.patch("quota_butler.handler.push_interactive")
     @mock.patch("quota_butler.handler.detect_agents")
-    def test_adjust_agents_shows_selector_only_for_dual_agent(self, detect, push):
+    def test_adjust_agents_shows_single_agent_choices_only(self, detect, push):
         detect.return_value = {"cc": _connected("cc"), "codex": _connected("codex")}
 
         rc = handler.handle(
@@ -191,7 +191,9 @@ class TestHandler(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         card = push.call_args.args[0]
-        self.assertIn("两个都用", str(card))
+        self.assertIn("Claude Code", str(card))
+        self.assertIn("Codex", str(card))
+        self.assertNotIn("两个都用", str(card))
         self.assertNotIn("自动安排", str(card))
 
     @mock.patch("quota_butler.handler.push_interactive")

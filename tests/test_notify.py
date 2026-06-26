@@ -18,7 +18,7 @@ from quota_butler.notify import (
 from quota_butler.plan_tasks import plan_record
 from quota_butler.planner import build_plan
 from quota_butler.providers.base import Usage, WindowUsage
-from quota_butler.schedule_flow import PlanRequest
+from quota_butler.schedule_flow import PlanRequest, parse_plan_request
 
 
 def _markdown(card):
@@ -130,12 +130,14 @@ class TestStatusCard(unittest.TestCase):
 
 class TestPlanningCards(unittest.TestCase):
     def setUp(self):
-        self.request = PlanRequest(
-            date(2026, 6, 20),
-            "point",
-            "09:00",
-            "14:00",
-            "auto",
+        self.request = parse_plan_request(
+            {
+                "target_date": "2026-06-20",
+                "time_mode": "point",
+                "work_start": "09:00",
+                "agent_strategy": "auto",
+            },
+            available_agent_count=1,
         )
         self.plan = build_plan(self.request, {"cc": _usage("cc", 30)})
 
@@ -176,13 +178,16 @@ class TestPlanningCards(unittest.TestCase):
         whole = str(card)
         actions = [value["action"] for value in _callbacks(card)]
 
-        self.assertIn("09:00–14:00", text)
+        self.assertIn("09:00–16:31", text)
         self.assertIn("06:30", whole)
-        self.assertIn("11:30", whole)
+        self.assertIn("11:31", whole)
         self.assertIn("开工", whole)
         self.assertIn("续上", whole)
         self.assertIn("2** 个预热任务", text)
         self.assertIn("真实请求", text)
+        self.assertIn("first_warmup", whole)
+        self.assertIn("second_warmup", whole)
+        self.assertIn("至少间隔 5 小时", text)
         # 彩色比例条用 -200 浅色档 + 加权列宽
         self.assertIn("blue-200", whole)
         self.assertIn("grey-200", whole)
@@ -192,35 +197,21 @@ class TestPlanningCards(unittest.TestCase):
         self.assertNotIn("预计连续覆盖", text)
         self.assertNotIn("不安排的话", text)
         self.assertNotIn("CAS", text)
-        self.assertEqual(
-            actions,
-            [
-                "adopt_schedule",
-                "adjust_schedule_agents",
-                "adjust_schedule_time",
-            ],
-        )
-        self.assertIn("更换 AI 工具", whole)
+        self.assertEqual(actions, ["adopt_schedule"])
+        self.assertNotIn("更换 AI 工具", whole)
+        self.assertNotIn("修改使用时间", whole)
         self.assertNotIn("调整 Agent", whole)
         self.assertNotIn("仅提醒", whole)
 
-    def test_dual_agent_plan_card_shows_relay_and_codex_prewarm(self):
+    def test_dual_agent_plan_is_rejected_in_single_agent_flow(self):
         request = PlanRequest(date(2026, 6, 20), "range", "09:00", "18:00", "both")
-        plan = build_plan(
-            request,
-            {"cc": _usage("cc", 20), "codex": _usage("codex", 30)},
-        )
-        codex_events = [e for e in plan.events if e.agent == "codex"]
-        card = build_schedule_card(plan)
-        whole = str(card)
+        with self.assertRaisesRegex(ValueError, "一次只编排一个"):
+            build_plan(
+                request,
+                {"cc": _usage("cc", 20), "codex": _usage("codex", 30)},
+            )
 
-        self.assertEqual(plan.agents, ("cc", "codex"))
-        self.assertEqual(len(codex_events), 2)     # P2: 垫窗 + 接力 两个 Codex 任务
-        self.assertIn("接力", whole)
-        self.assertIn("wathet-200", whole)         # Codex 段换色
-        self.assertIn("真实请求", whole)
-
-    def test_dual_agent_control_exposes_three_explicit_tool_choices(self):
+    def test_agent_control_exposes_single_agent_choices(self):
         card = build_agent_control_card(
             self.request,
             {
@@ -237,8 +228,8 @@ class TestPlanningCards(unittest.TestCase):
         ]
 
         text = str(card)
-        self.assertEqual(strategies, ["cc", "codex", "both"])
-        self.assertIn("两个都用", text)
+        self.assertEqual(strategies, ["cc", "codex"])
+        self.assertNotIn("两个都用", text)
         self.assertNotIn("自动安排", text)
 
     def test_single_agent_control_has_no_meaningless_selector(self):
@@ -274,7 +265,7 @@ class TestPlanningCards(unittest.TestCase):
 
         self.assertIn("06:30", text)
         self.assertIn("已执行", text)
-        self.assertIn("11:30", text)
+        self.assertIn("11:31", text)
         self.assertIn("未执行", text)
         self.assertIn("取消所有计划", str(card))
         self.assertEqual(_callbacks(card)[0]["action"], "cancel_schedule")
@@ -325,6 +316,40 @@ class TestReminderAndMenuCards(unittest.TestCase):
         self.assertIn("选择要立即预热", text)
         self.assertEqual([value["provider"] for value in callbacks], ["cc"])
         self.assertEqual(callbacks[0]["action"], "warmup_now")
+
+    def test_manual_warmup_hides_running_window_and_explains_caps(self):
+        card = build_manual_warmup_card(
+            {
+                "cc": AgentStatus(
+                    "cc",
+                    AgentState.CONNECTED,
+                    usage=Usage(
+                        "cc",
+                        WindowUsage(
+                            20,
+                            datetime(2099, 6, 20, 11, 30, tzinfo=timezone.utc),
+                            5 * 3600,
+                            "five_hour",
+                        ),
+                    ),
+                ),
+                "codex": AgentStatus(
+                    "codex",
+                    AgentState.CONNECTED,
+                    usage=Usage(
+                        "codex",
+                        WindowUsage(20, None, 5 * 3600, "five_hour"),
+                        WindowUsage(100, None, 7 * 86400, "weekly"),
+                    ),
+                ),
+            }
+        )
+        text = _markdown(card)
+
+        self.assertEqual(_callbacks(card), [])
+        self.assertIn("Claude Code：当前 5 小时窗口已在进行中，无需立即预热", text)
+        self.assertIn("Codex：7 天额度已耗尽，暂不可预热", text)
+        self.assertIn("暂时没有需要立即预热的工具", text)
 
     def test_all_callbacks_use_private_quota_command(self):
         cards = [

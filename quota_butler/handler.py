@@ -39,8 +39,10 @@ from .providers.base import ProviderError
 from .schedule_flow import (
     FLOW_VERSION,
     PlanRequest,
+    normalize_hhmm,
     parse_plan_request,
     validate_flow_context,
+    validate_warmup_times,
 )
 
 DEFAULT_CONFIG = "~/.quota-butler/config.yaml"
@@ -195,7 +197,7 @@ def _handle_schedule_flow(payload, cfg, st, dry_run):
 
     form = payload.get("form_value")
     if isinstance(form, Mapping):
-        for key in ("work_start", "work_end"):
+        for key in ("work_start", "work_end", "first_warmup", "second_warmup"):
             if key in form:
                 request_raw[key] = form[key]
     if payload.get("agent_strategy"):
@@ -246,9 +248,13 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
         _safe_receipt("已有生效计划，请先取消后再采用新计划", cfg, dry_run)
         return _finish(cfg, st, 4)
     try:
+        candidate = _apply_adopt_form(candidate, payload.get("form_value"))
         record = validate_plan_record(candidate)
     except PlanTaskError as exc:
         _safe_receipt(f"❌ 计划不可采用：{exc}", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    except ValueError as exc:
+        _safe_receipt(f"❌ {exc}", cfg, dry_run)
         return _finish(cfg, st, 4)
     statuses = detect_agents(tuple(record.get("agents") or ()))
     unavailable = [
@@ -277,6 +283,34 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
         st.proposed_plan_id = None
     _safe_receipt(f"✅ 已采用计划，已创建 {len(tasks)} 个预热任务", cfg, dry_run)
     return _finish(cfg, st, 0)
+
+
+def _apply_adopt_form(candidate: Dict[str, Any], form_value: Any) -> Dict[str, Any]:
+    if not isinstance(form_value, Mapping):
+        return candidate
+    if "first_warmup" not in form_value and "second_warmup" not in form_value:
+        return candidate
+    record = dict(candidate)
+    events = [dict(event) for event in record.get("events") or []]
+    if len(events) < 2:
+        raise ValueError("计划缺少两次预热时间")
+    first = normalize_hhmm(form_value.get("first_warmup") or events[0].get("at", "")[11:16])
+    second = normalize_hhmm(form_value.get("second_warmup") or events[1].get("at", "")[11:16])
+    validate_warmup_times(first, second)
+    base = datetime.fromisoformat(str(record.get("work_start")))
+    first_at = base.replace(hour=int(first[:2]), minute=int(first[3:]), second=0, microsecond=0)
+    second_at = base.replace(hour=int(second[:2]), minute=int(second[3:]), second=0, microsecond=0)
+    work_end = second_at + timedelta(hours=5)
+    events[0]["at"] = first_at.isoformat()
+    events[1]["at"] = second_at.isoformat()
+    record["events"] = events
+    record["work_end"] = work_end.isoformat()
+    request = dict(record.get("request") or {})
+    request["first_warmup"] = first
+    request["second_warmup"] = second
+    request["work_end"] = work_end.strftime("%H:%M")
+    record["request"] = request
+    return record
 
 
 def _warmup(payload, cfg, st, dry_run):

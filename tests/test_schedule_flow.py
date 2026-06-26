@@ -7,14 +7,15 @@ from quota_butler.schedule_flow import (
     flow_payload,
     parse_plan_request,
     validate_flow_context,
+    validate_warmup_times,
 )
 
 
 class TestPlanRequest(unittest.TestCase):
     def test_v3_flow_invalidates_old_guided_cards(self):
-        self.assertEqual(FLOW_VERSION, 4)
+        self.assertEqual(FLOW_VERSION, 5)
 
-    def test_single_start_defaults_to_five_hours_with_one_agent(self):
+    def test_single_start_defaults_to_two_warmups_with_one_agent(self):
         request = parse_plan_request(
             {
                 "target_date": "2026-06-20",
@@ -25,10 +26,12 @@ class TestPlanRequest(unittest.TestCase):
         )
 
         self.assertEqual(request.work_start, "09:00")
-        self.assertEqual(request.work_end, "14:00")
+        self.assertEqual(request.first_warmup, "06:30")
+        self.assertEqual(request.second_warmup, "11:31")
+        self.assertEqual(request.work_end, "16:31")
         self.assertEqual(request.agent_strategy, "auto")
 
-    def test_single_start_defaults_to_eight_hours_with_two_agents(self):
+    def test_single_start_uses_same_single_agent_defaults_with_two_agents(self):
         request = parse_plan_request(
             {
                 "target_date": "2026-06-20",
@@ -38,7 +41,9 @@ class TestPlanRequest(unittest.TestCase):
             available_agent_count=2,
         )
 
-        self.assertEqual(request.work_end, "17:00")
+        self.assertEqual(request.first_warmup, "06:30")
+        self.assertEqual(request.second_warmup, "11:31")
+        self.assertEqual(request.work_end, "16:31")
 
     def test_explicit_range_is_limited_to_sixteen_hours(self):
         request = parse_plan_request(
@@ -84,9 +89,16 @@ class TestPlanRequest(unittest.TestCase):
             "work_start": "12:00",
             "work_end": "18:00",
             "agent_strategy": "cc",
+            "first_warmup": "",
+            "second_warmup": "",
         })
         self.assertNotIn("task_type", str(payload))
         self.assertNotIn("intensity", str(payload))
+
+    def test_warmup_times_need_five_hour_gap(self):
+        self.assertEqual(validate_warmup_times("06:30", "11:30"), 300)
+        with self.assertRaisesRegex(ValueError, "5 小时"):
+            validate_warmup_times("06:30", "07:30")
 
     def test_validate_context_rejects_old_version(self):
         with self.assertRaisesRegex(ValueError, "失效"):

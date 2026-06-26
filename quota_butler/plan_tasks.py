@@ -42,6 +42,8 @@ def plan_record(plan: SchedulePlan) -> Dict[str, Any]:
             "work_start": plan.request.work_start,
             "work_end": plan.request.work_end,
             "agent_strategy": plan.request.agent_strategy,
+            "first_warmup": plan.request.first_warmup,
+            "second_warmup": plan.request.second_warmup,
         },
     }
     digest = hashlib.sha256(
