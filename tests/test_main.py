@@ -237,6 +237,39 @@ class TestMainV3(unittest.TestCase):
         self.assertEqual(rc, 0)
         push.assert_not_called()
 
+    @mock.patch("quota_butler.main.detect_agents")
+    def test_today_completed_plan_is_kept_until_next_day(self, detect):
+        detect.return_value = {}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                plans_by_date={
+                    "2026-06-20": {
+                        "plan_id": "today",
+                        "plan_version": 3,
+                        "status": "active",
+                        "work_start": "2026-06-20T09:00:00",
+                        "work_end": "2026-06-20T14:00:00",
+                        "tasks": [
+                            {
+                                "provider": "codex",
+                                "scheduled_for": "2026-06-20T11:30:00",
+                                "status": "executed",
+                            }
+                        ],
+                    }
+                }
+            ),
+        )
+
+        rc = main.run(
+            self.config_path,
+            now=datetime(2026, 6, 20, 16, 0, tzinfo=LOCAL),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("2026-06-20", state_mod.load(self.state_path).plans_by_date)
+
     @mock.patch("quota_butler.main.push_interactive")
     @mock.patch("quota_butler.main.detect_agents")
     def test_22_oclock_sends_bedtime_card_only_once_per_day(self, detect, push):

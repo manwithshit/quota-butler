@@ -97,6 +97,7 @@ class TestPlanRequest(unittest.TestCase):
 
     def test_warmup_times_need_five_hour_gap(self):
         self.assertEqual(validate_warmup_times("06:30", "11:30"), 300)
+        self.assertEqual(validate_warmup_times("18:30", "11:31"), 419)
         with self.assertRaisesRegex(ValueError, "5 小时"):
             validate_warmup_times("06:30", "07:30")
 

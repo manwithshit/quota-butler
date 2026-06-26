@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Mapping, Optional
 
 from .agent_status import AgentState, AgentStatus
@@ -105,6 +105,11 @@ def quota_status_line(five, secondary=None) -> str:
 def _format_reset(window) -> str:
     if window.resets_at:
         return window.resets_at.astimezone().strftime("%m-%d %H:%M")
+    if (
+        (window.kind == "five_hour" or window.window_seconds == 5 * 3600)
+        and window.utilization <= 0
+    ):
+        return "发送任意消息时触发"
     return "暂无"
 
 
@@ -536,6 +541,7 @@ def _schedule_timeline_elements(plan: SchedulePlan):
         headline = md(f"**明天 {ws:%H:%M}–{we:%H:%M}：{first_label}**")
         note = md(
             f"重点使用区间：**{ws:%H:%M}–{we:%H:%M}**。"
+            "默认约 **7.5 小时**，尽量吃满单个工具两段 5 小时窗口，约等于 **200%** 可用窗口。"
             f"将创建 **{len(plan.events)}** 个预热任务；每次预热都会发起一次真实请求。"
         )
 
@@ -554,7 +560,7 @@ def build_schedule_card(plan: SchedulePlan) -> Dict[str, Any]:
     elements.append(
         {
             "tag": "markdown",
-            "content": "确认前可以调整两次预热时间；两次预热至少间隔 5 小时。",
+            "content": "确认前可以调整两个预热时间；两个预热时间至少相隔 5 小时。",
         }
     )
     elements.append(
@@ -618,7 +624,7 @@ def build_active_plan_card(record: Mapping[str, Any]) -> Dict[str, Any]:
             status = _task_status_text(str(task.get("status") or "pending"))
             lines.append(
                 f"{status[0]} **{_hhmm(task.get('scheduled_for'))}** · "
-                f"{PROVIDER_LABEL.get(task.get('provider'), task.get('provider'))}"
+                f"{_provider_label(task)}"
                 f" · {status[1]}"
             )
     else:
@@ -633,6 +639,53 @@ def build_active_plan_card(record: Mapping[str, Any]) -> Dict[str, Any]:
         lines,
         [_button("取消所有计划", "danger", _callback("cancel_schedule"))],
     )
+
+
+def build_current_plans_card(
+    plans_by_date: Mapping[str, Mapping[str, Any]],
+    *,
+    today: Optional[date] = None,
+) -> Dict[str, Any]:
+    today = today or date.today()
+    lines = ["**当前计划**", ""]
+    buttons = []
+    for title, day in (
+        ("今日计划", today),
+        ("明日计划", today + timedelta(days=1)),
+    ):
+        key = day.isoformat()
+        record = plans_by_date.get(key)
+        lines.append(f"**{title}**")
+        if not record:
+            lines.append("暂无计划")
+            lines.append("")
+            continue
+        start = _hhmm(record.get("work_start"))
+        end = _hhmm(record.get("work_end"))
+        labels = " + ".join(
+            PROVIDER_LABEL.get(agent, str(agent))
+            for agent in record.get("agents") or []
+        )
+        lines.append(f"{start}–{end} · **{labels or '未记录'}**")
+        for task in record.get("tasks") or []:
+            status = _task_status_text(str(task.get("status") or "pending"))
+            lines.append(
+                f"{status[0]} **{_hhmm(task.get('scheduled_for'))}** · "
+                f"{_provider_label(task)}"
+                f" · {status[1]}"
+            )
+        if _has_pending_tasks(record):
+            buttons.append(
+                _button(
+                    f"取消{title[:2]}计划",
+                    "danger",
+                    _callback("cancel_schedule", target_date=key),
+                )
+            )
+        else:
+            lines.append("已完成，没有可取消的未执行任务")
+        lines.append("")
+    return _card("额度管家：当前计划", lines, buttons)
 
 
 def build_command_menu_card() -> Dict[str, Any]:
@@ -658,6 +711,10 @@ def push_schedule_card(plan: SchedulePlan, config: Config, dry_run: bool = False
 
 def push_active_plan_card(record, config: Config, dry_run: bool = False):
     return push_interactive(build_active_plan_card(record), config, dry_run)
+
+
+def push_current_plans_card(plans_by_date, config: Config, dry_run: bool = False):
+    return push_interactive(build_current_plans_card(plans_by_date), config, dry_run)
 
 
 def push_command_menu_card(config: Config, dry_run: bool = False):
@@ -718,6 +775,20 @@ def _task_status_text(status: str):
     if status == "failed":
         return "❌", "失败"
     return "⏳", "未执行"
+
+
+def _has_pending_tasks(record: Mapping[str, Any]) -> bool:
+    return any(
+        str(task.get("status") or "pending") == "pending"
+        for task in record.get("tasks") or []
+    )
+
+
+def _provider_label(value: Mapping[str, Any]) -> str:
+    provider = value.get("provider") or value.get("agent")
+    if not provider:
+        return "未记录"
+    return PROVIDER_LABEL.get(str(provider), str(provider))
 
 
 def _request_dict(request: PlanRequest):

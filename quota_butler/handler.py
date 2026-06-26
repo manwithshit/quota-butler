@@ -20,8 +20,8 @@ from .notify import (
     build_agent_control_card,
     build_manual_warmup_card,
     build_time_card,
-    push_active_plan_card,
     push_command_menu_card,
+    push_current_plans_card,
     push_interactive,
     push_receipt,
     push_schedule_card,
@@ -86,6 +86,11 @@ def _handle_locked(payload, cfg, config_path, dry_run):
 
         if action == "schedule_intent":
             target = _target_date(payload)
+            plans = _current_plan_index(st)
+            _reconcile_current_plans(st, plans)
+            if plans.get(target.isoformat()):
+                push_current_plans_card(plans, reply_cfg, dry_run=dry_run)
+                return _finish(cfg, st, 0)
             push_interactive(
                 build_time_card(PlanRequest(target, "point", "09:00", "14:00", "auto")),
                 reply_cfg,
@@ -116,19 +121,16 @@ def _handle_locked(payload, cfg, config_path, dry_run):
             return _adopt_schedule(payload, reply_cfg, st, config_path, dry_run)
 
         if action == "view_schedule":
-            if not st.active_plan:
+            plans = _current_plan_index(st)
+            _reconcile_current_plans(st, plans)
+            if not plans:
                 _safe_receipt("当前没有生效计划", reply_cfg, dry_run)
             else:
-                _reconcile_plan_task_statuses(st.active_plan)
-                push_active_plan_card(st.active_plan, reply_cfg, dry_run=dry_run)
+                push_current_plans_card(plans, reply_cfg, dry_run=dry_run)
             return _finish(cfg, st, 0)
 
         if action == "cancel_schedule":
-            if st.active_plan and not dry_run:
-                cancel_plan_tasks(st.active_plan.get("tasks") or [])
-                st.active_plan = None
-            _safe_receipt("✅ 已取消计划，未执行任务已删除", reply_cfg, dry_run)
-            return _finish(cfg, st, 0)
+            return _cancel_schedule(payload, reply_cfg, st, dry_run)
 
         if action in ("warmup_now", "scheduled_warmup"):
             return _warmup(payload, reply_cfg, st, dry_run)
@@ -244,9 +246,6 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
     ):
         _safe_receipt("该计划不是最新预览，请采用最新计划", cfg, dry_run)
         return _finish(cfg, st, 4)
-    if st.active_plan and st.active_plan.get("status") == "active":
-        _safe_receipt("已有生效计划，请先取消后再采用新计划", cfg, dry_run)
-        return _finish(cfg, st, 4)
     try:
         candidate = _apply_adopt_form(candidate, payload.get("form_value"))
         record = validate_plan_record(candidate)
@@ -255,6 +254,12 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
         return _finish(cfg, st, 4)
     except ValueError as exc:
         _safe_receipt(f"❌ {exc}", cfg, dry_run)
+        return _finish(cfg, st, 4)
+    target_date = _plan_date(record)
+    plans = _current_plan_index(st)
+    existing = plans.get(target_date)
+    if existing and existing.get("status") == "active":
+        _safe_receipt(f"❌ {target_date} 已有计划，请先取消后再重新设置", cfg, dry_run)
         return _finish(cfg, st, 4)
     statuses = detect_agents(tuple(record.get("agents") or ()))
     unavailable = [
@@ -279,7 +284,9 @@ def _adopt_schedule(payload, cfg, st, config_path, dry_run):
         record["status"] = "active"
         record["adopted_at"] = datetime.now(timezone.utc).isoformat()
         record["tasks"] = tasks
-        st.active_plan = record
+        plans[target_date] = record
+        st.plans_by_date = plans
+        _sync_active_plan(st)
         st.proposed_plan_id = None
     _safe_receipt(f"✅ 已采用计划，已创建 {len(tasks)} 个预热任务", cfg, dry_run)
     return _finish(cfg, st, 0)
@@ -298,19 +305,156 @@ def _apply_adopt_form(candidate: Dict[str, Any], form_value: Any) -> Dict[str, A
     second = normalize_hhmm(form_value.get("second_warmup") or events[1].get("at", "")[11:16])
     validate_warmup_times(first, second)
     base = datetime.fromisoformat(str(record.get("work_start")))
-    first_at = base.replace(hour=int(first[:2]), minute=int(first[3:]), second=0, microsecond=0)
-    second_at = base.replace(hour=int(second[:2]), minute=int(second[3:]), second=0, microsecond=0)
-    work_end = second_at + timedelta(hours=5)
-    events[0]["at"] = first_at.isoformat()
-    events[1]["at"] = second_at.isoformat()
+    warmup_times = sorted(
+        [
+            base.replace(hour=int(first[:2]), minute=int(first[3:]), second=0, microsecond=0),
+            base.replace(hour=int(second[:2]), minute=int(second[3:]), second=0, microsecond=0),
+        ]
+    )
+    work_end = warmup_times[-1] + timedelta(hours=5)
+    events.sort(key=lambda event: str(event.get("at") or ""))
+    events[0]["at"] = warmup_times[0].isoformat()
+    events[1]["at"] = warmup_times[1].isoformat()
+    events.sort(key=lambda event: str(event.get("at") or ""))
     record["events"] = events
     record["work_end"] = work_end.isoformat()
     request = dict(record.get("request") or {})
-    request["first_warmup"] = first
-    request["second_warmup"] = second
+    request["first_warmup"] = warmup_times[0].strftime("%H:%M")
+    request["second_warmup"] = warmup_times[1].strftime("%H:%M")
     request["work_end"] = work_end.strftime("%H:%M")
     record["request"] = request
     return record
+
+
+def _cancel_schedule(payload, cfg, st, dry_run):
+    plans = _current_plan_index(st)
+    target_date = str(payload.get("target_date") or "").strip()
+    if target_date:
+        record = plans.get(target_date)
+        if not record:
+            _safe_receipt("没有可以取消的计划", cfg, dry_run)
+            return _finish(cfg, st, 0)
+        pending = _pending_tasks(record)
+        if not pending:
+            _safe_receipt("没有可以取消的未执行任务", cfg, dry_run)
+            return _finish(cfg, st, 0)
+        if not dry_run:
+            cancel_plan_tasks(pending)
+            _remove_plan_from_index(st, plans, target_date)
+            st.plans_by_date = plans or None
+            _sync_active_plan(st)
+        _safe_receipt("✅ 已取消计划，未执行任务已删除", cfg, dry_run)
+        return _finish(cfg, st, 0)
+    cancellable = [
+        (day, record)
+        for day, record in plans.items()
+        if _pending_tasks(record)
+    ]
+    if not cancellable:
+        _safe_receipt("没有可以取消的未执行任务", cfg, dry_run)
+        return _finish(cfg, st, 0)
+    if not dry_run:
+        for day, record in cancellable:
+            cancel_plan_tasks(_pending_tasks(record))
+            _remove_plan_from_index(st, plans, day)
+        st.plans_by_date = plans or None
+        _sync_active_plan(st)
+    _safe_receipt("✅ 已取消计划，未执行任务已删除", cfg, dry_run)
+    return _finish(cfg, st, 0)
+
+
+def _current_plan_index(st) -> Dict[str, Dict[str, Any]]:
+    plans = {
+        str(day): dict(record)
+        for day, record in (st.plans_by_date or {}).items()
+        if isinstance(record, dict) and record.get("status") == "active"
+    }
+    active = st.active_plan
+    if isinstance(active, dict) and active.get("status") == "active":
+        day = _plan_date(active)
+        if day and day not in plans:
+            plans[day] = active
+    st.plans_by_date = plans or None
+    return plans
+
+
+def _sync_active_plan(st) -> None:
+    plans = _current_plan_index(st)
+    if not plans:
+        st.active_plan = None
+        return
+    today = date.today().isoformat()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    st.active_plan = plans.get(today) or plans.get(tomorrow) or plans[sorted(plans)[0]]
+
+
+def _plan_date(record: Mapping[str, Any]) -> str:
+    try:
+        return datetime.fromisoformat(str(record.get("work_start"))).date().isoformat()
+    except (TypeError, ValueError):
+        request = record.get("request") if isinstance(record.get("request"), dict) else {}
+        if request.get("target_date"):
+            return str(request.get("target_date") or "")
+        for task in record.get("tasks") or []:
+            try:
+                return datetime.fromisoformat(
+                    str(task.get("scheduled_for"))
+                ).date().isoformat()
+            except (TypeError, ValueError):
+                continue
+        for event in record.get("events") or []:
+            try:
+                return datetime.fromisoformat(str(event.get("at"))).date().isoformat()
+            except (TypeError, ValueError):
+                continue
+        return ""
+
+
+def _pending_tasks(record: Mapping[str, Any]):
+    return [
+        task for task in record.get("tasks") or []
+        if str(task.get("status") or "pending") == "pending"
+    ]
+
+
+def _reconcile_current_plans(st, plans: Dict[str, Dict[str, Any]]) -> None:
+    for day, plan in list(plans.items()):
+        _reconcile_plan_task_statuses(plan)
+        if _all_tasks_canceled(plan):
+            _remove_plan_from_index(st, plans, day)
+    st.plans_by_date = plans or None
+    _sync_active_plan(st)
+
+
+def _all_tasks_canceled(record: Mapping[str, Any]) -> bool:
+    tasks = record.get("tasks") or []
+    return bool(tasks) and all(
+        str(task.get("status") or "pending") == "canceled"
+        for task in tasks
+    )
+
+
+def _remove_plan_from_index(st, plans: Dict[str, Dict[str, Any]], target_date: str) -> None:
+    removed = plans.pop(target_date, None)
+    active = st.active_plan
+    if not isinstance(active, dict):
+        return
+    same_day = _plan_date(active) == target_date
+    same_plan = bool(
+        removed
+        and str(active.get("plan_id") or "")
+        and str(active.get("plan_id") or "") == str(removed.get("plan_id") or "")
+    )
+    if same_day or same_plan:
+        st.active_plan = None
+
+
+def _find_plan_by_id(st, plan_id: str):
+    plans = _current_plan_index(st)
+    for day, record in plans.items():
+        if str(record.get("plan_id") or "") == plan_id:
+            return day, record
+    return "", None
 
 
 def _warmup(payload, cfg, st, dry_run):
@@ -320,9 +464,10 @@ def _warmup(payload, cfg, st, dry_run):
         return _finish(cfg, st, 4)
     scheduled = payload.get("action") == "scheduled_warmup"
     task = None
+    active = None
     if scheduled:
-        active = st.active_plan or {}
-        if active.get("plan_id") != payload.get("plan_id"):
+        _, active = _find_plan_by_id(st, str(payload.get("plan_id") or ""))
+        if not active:
             return _finish(cfg, st, 4)
         for item in active.get("tasks") or []:
             if (
@@ -354,6 +499,7 @@ def _warmup(payload, cfg, st, dry_run):
                 task,
                 "failed",
                 error=str(exc),
+                active_plan=active,
                 dry_run=dry_run,
             )
         else:
@@ -374,6 +520,7 @@ def _warmup(payload, cfg, st, dry_run):
             payload,
             task,
             "executed",
+            active_plan=active,
             executed_at=executed_at,
             dry_run=dry_run,
         )
@@ -395,6 +542,7 @@ def _handle_scheduled_warmup_receipt(
     *,
     error: str = "",
     executed_at: datetime = None,
+    active_plan=None,
     dry_run: bool,
 ) -> None:
     receipt = {
@@ -407,7 +555,7 @@ def _handle_scheduled_warmup_receipt(
     }
     if error:
         receipt["error"] = error[:200]
-    active = st.active_plan or {}
+    active = active_plan or st.active_plan or {}
     if _is_quiet_time(datetime.now().astimezone()):
         _queue_warmup_receipt(st, receipt)
         return
@@ -508,7 +656,14 @@ def _reconcile_plan_task_statuses(active_plan) -> None:
         if str(task.get("status") or "pending") != "pending":
             continue
         scheduled = _parse_task_time(task.get("scheduled_for"))
-        if scheduled is None or scheduled > now:
+        if scheduled is None:
+            continue
+        if scheduled > now:
+            plist = str(task.get("plist_path") or "")
+            if plist and not os.path.exists(os.path.expanduser(plist)):
+                task["status"] = "canceled"
+                task["canceled_at"] = now.isoformat()
+                task["status_inferred"] = True
             continue
         label = str(task.get("label") or "")
         if not label:
@@ -654,10 +809,13 @@ def _status_snapshot(statuses):
 
 
 def _migrate_v2(st):
-    active = st.active_plan
-    if active and int(active.get("plan_version") or 0) < 3:
-        cancel_plan_tasks(active.get("tasks") or [])
-        st.active_plan = None
+    plans = _current_plan_index(st)
+    for day, record in list(plans.items()):
+        if int(record.get("plan_version") or 0) < 3:
+            cancel_plan_tasks(record.get("tasks") or [])
+            plans.pop(day, None)
+    st.plans_by_date = plans or None
+    _sync_active_plan(st)
 
 
 def _safe_receipt(text, cfg, dry_run):

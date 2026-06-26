@@ -7,6 +7,7 @@ from quota_butler.notify import (
     build_agent_control_card,
     build_bedtime_card,
     build_command_menu_card,
+    build_current_plans_card,
     build_manual_warmup_card,
     build_recovery_card,
     build_schedule_card,
@@ -98,6 +99,21 @@ class TestStatusCard(unittest.TestCase):
         self.assertIn("7 天额度仅剩", text)     # 木桶警告
         self.assertIn("真正的上限", text)
 
+    def test_status_card_explains_fresh_five_hour_window_starts_on_message(self):
+        usage = Usage(
+            "codex",
+            WindowUsage(0.0, None, 5 * 3600, "five_hour"),
+            WindowUsage(50.0, datetime(2026, 6, 25, tzinfo=timezone.utc), 7 * 86400),
+        )
+        statuses = {"codex": AgentStatus("codex", AgentState.CONNECTED, usage=usage)}
+
+        text = _markdown(build_status_card(statuses))
+
+        self.assertIn("5 小时窗口", text)
+        self.assertIn("还剩 **100%**", text)
+        self.assertIn("刷新：**发送任意消息时触发**", text)
+        self.assertNotIn("刷新：**暂无**", text)
+
     def test_status_card_labels_codex_free_monthly_window(self):
         usage = Usage(
             "codex",
@@ -187,7 +203,7 @@ class TestPlanningCards(unittest.TestCase):
         self.assertIn("真实请求", text)
         self.assertIn("first_warmup", whole)
         self.assertIn("second_warmup", whole)
-        self.assertIn("至少间隔 5 小时", text)
+        self.assertIn("至少相隔 5 小时", text)
         # 彩色比例条用 -200 浅色档 + 加权列宽
         self.assertIn("blue-200", whole)
         self.assertIn("grey-200", whole)
@@ -269,6 +285,75 @@ class TestPlanningCards(unittest.TestCase):
         self.assertIn("未执行", text)
         self.assertIn("取消所有计划", str(card))
         self.assertEqual(_callbacks(card)[0]["action"], "cancel_schedule")
+
+    def test_current_plans_card_shows_today_and_tomorrow(self):
+        today_record = plan_record(self.plan)
+        today_record["status"] = "active"
+        today_record["work_start"] = "2026-06-20T09:00:00"
+        today_record["work_end"] = "2026-06-20T16:31:00"
+        today_record["tasks"] = [
+            {
+                "provider": "cc",
+                "scheduled_for": "2026-06-20T06:30:00",
+                "status": "executed",
+            },
+            {
+                "provider": "cc",
+                "scheduled_for": "2026-06-20T11:31:00",
+                "status": "executed",
+            },
+        ]
+        tomorrow_record = dict(today_record)
+        tomorrow_record["plan_id"] = "tomorrow"
+        tomorrow_record["work_start"] = "2026-06-21T13:00:00"
+        tomorrow_record["work_end"] = "2026-06-21T20:31:00"
+        tomorrow_record["tasks"] = [
+            {
+                "provider": "cc",
+                "scheduled_for": "2026-06-21T10:30:00",
+                "status": "pending",
+            }
+        ]
+
+        card = build_current_plans_card(
+            {
+                "2026-06-20": today_record,
+                "2026-06-21": tomorrow_record,
+            },
+            today=date(2026, 6, 20),
+        )
+        text = _markdown(card)
+        callbacks = _callbacks(card)
+
+        self.assertIn("今日计划", text)
+        self.assertIn("明日计划", text)
+        self.assertIn("已完成，没有可取消", text)
+        self.assertIn("13:00–20:31", text)
+        self.assertIn("Claude Code", text)
+        self.assertNotIn("None", text)
+        self.assertEqual([value["target_date"] for value in callbacks], ["2026-06-21"])
+
+    def test_current_plans_card_handles_legacy_agent_task_field(self):
+        record = plan_record(self.plan)
+        record["status"] = "active"
+        record["work_start"] = "2026-06-20T09:00:00"
+        record["work_end"] = "2026-06-20T16:31:00"
+        record["tasks"] = [
+            {
+                "agent": "codex",
+                "scheduled_for": "2026-06-20T06:30:00",
+                "status": "executed",
+            }
+        ]
+
+        card = build_current_plans_card(
+            {"2026-06-20": record},
+            today=date(2026, 6, 20),
+        )
+        text = _markdown(card)
+
+        self.assertIn("Codex", text)
+        self.assertNotIn("None", text)
 
 
 class TestReminderAndMenuCards(unittest.TestCase):

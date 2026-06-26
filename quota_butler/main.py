@@ -18,7 +18,12 @@ from .notify import (
     push_receipt,
 )
 from .plan_tasks import cancel_plan_tasks
-from .handler import _warmup_receipt_text
+from .handler import (
+    _current_plan_index,
+    _plan_date,
+    _sync_active_plan,
+    _warmup_receipt_text,
+)
 from .providers import get_provider
 from .providers.base import ProviderError
 
@@ -113,7 +118,7 @@ def _newly_recovered(statuses, st, now):
     previous = st.provider_snapshots or {}
     notified = st.last_recovery_notified_windows or {}
     results = []
-    if _active_plan_covers(st.active_plan, now):
+    if any(_active_plan_covers(plan, now) for plan in _current_plan_index(st).values()):
         return results
     for provider, status in statuses.items():
         if not status.schedulable or not status.usage:
@@ -169,7 +174,7 @@ def _send_due_warmup_receipts(cfg, st, dry_run):
     if not pending:
         return
     text = "\n\n".join(
-        _warmup_receipt_text(receipt, st.active_plan or {})
+        _warmup_receipt_text(receipt, _plan_for_receipt(st, receipt) or {})
         for receipt in pending
     )
     push_receipt(text, _notification_config(cfg, st), dry_run=dry_run)
@@ -178,44 +183,43 @@ def _send_due_warmup_receipts(cfg, st, dry_run):
 
 
 def _run_due_plan_warmups(cfg, st, now, *, dry_run):
-    active = st.active_plan or {}
-    if active.get("status") != "active":
-        return
-    plan_id = str(active.get("plan_id") or "")
-    for task in active.get("tasks") or []:
-        if str(task.get("status") or "pending") != "pending":
-            continue
-        scheduled = _parse_plan_time(task.get("scheduled_for"), now)
-        if scheduled is None or scheduled > now.astimezone(scheduled.tzinfo):
-            continue
-        provider = str(task.get("provider") or "")
-        if dry_run:
-            continue
-        receipt = {
-            "key": ":".join(
-                [plan_id, provider, str(task.get("scheduled_for") or ""), "executed"]
-            ),
-            "plan_id": plan_id,
-            "provider": provider,
-            "scheduled_for": str(task.get("scheduled_for") or ""),
-            "status": "executed",
-            "executed_at": now.isoformat(),
-        }
-        try:
-            get_provider(provider).warmup(cfg.warmup_prompt)
-        except (ProviderError, NotImplementedError) as exc:
-            task["status"] = "failed"
-            task["error"] = str(exc)[:200]
-            receipt["key"] = ":".join(
-                [plan_id, provider, str(task.get("scheduled_for") or ""), "failed"]
-            )
-            receipt["status"] = "failed"
-            receipt["error"] = str(exc)[:200]
-        else:
-            task["status"] = "executed"
-            task["executed_at"] = now.isoformat()
-            cancel_plan_tasks([task])
-        _queue_warmup_receipt(st, receipt)
+    for active in _current_plan_index(st).values():
+        plan_id = str(active.get("plan_id") or "")
+        for task in active.get("tasks") or []:
+            if str(task.get("status") or "pending") != "pending":
+                continue
+            scheduled = _parse_plan_time(task.get("scheduled_for"), now)
+            if scheduled is None or scheduled > now.astimezone(scheduled.tzinfo):
+                continue
+            provider = str(task.get("provider") or "")
+            if dry_run:
+                continue
+            receipt = {
+                "key": ":".join(
+                    [plan_id, provider, str(task.get("scheduled_for") or ""), "executed"]
+                ),
+                "plan_id": plan_id,
+                "provider": provider,
+                "scheduled_for": str(task.get("scheduled_for") or ""),
+                "status": "executed",
+                "executed_at": now.isoformat(),
+            }
+            try:
+                get_provider(provider).warmup(cfg.warmup_prompt)
+            except (ProviderError, NotImplementedError) as exc:
+                task["status"] = "failed"
+                task["error"] = str(exc)[:200]
+                receipt["key"] = ":".join(
+                    [plan_id, provider, str(task.get("scheduled_for") or ""), "failed"]
+                )
+                receipt["status"] = "failed"
+                receipt["error"] = str(exc)[:200]
+            else:
+                task["status"] = "executed"
+                task["executed_at"] = now.isoformat()
+                cancel_plan_tasks([task])
+            _queue_warmup_receipt(st, receipt)
+    _sync_active_plan(st)
 
 
 def _queue_warmup_receipt(st, receipt):
@@ -225,6 +229,14 @@ def _queue_warmup_receipt(st, receipt):
         return
     pending.append(receipt)
     st.pending_warmup_receipts = pending
+
+
+def _plan_for_receipt(st, receipt):
+    plan_id = str(receipt.get("plan_id") or "")
+    for plan in _current_plan_index(st).values():
+        if str(plan.get("plan_id") or "") == plan_id:
+            return plan
+    return None
 
 
 def _parse_plan_time(value, now):
@@ -279,21 +291,17 @@ def _active_plan_covers(active, now):
 
 
 def _migrate_and_expire(st, now):
-    active = st.active_plan
-    if not active:
-        return
-    version = int(active.get("plan_version") or 0)
-    expired = False
-    try:
-        work_end = datetime.fromisoformat(str(active.get("work_end")))
-        if work_end.tzinfo is None:
-            work_end = work_end.replace(tzinfo=now.astimezone().tzinfo)
-        expired = work_end <= now.astimezone(work_end.tzinfo)
-    except ValueError:
-        expired = False
-    if version < 3 or expired:
-        cancel_plan_tasks(active.get("tasks") or [])
-        st.active_plan = None
+    plans = _current_plan_index(st)
+    local_today = now.astimezone().date().isoformat()
+    for day, active in list(plans.items()):
+        version = int(active.get("plan_version") or 0)
+        plan_day = day or _plan_date(active)
+        expired = bool(plan_day and plan_day < local_today)
+        if version < 3 or expired:
+            cancel_plan_tasks(active.get("tasks") or [])
+            plans.pop(day, None)
+    st.plans_by_date = plans or None
+    _sync_active_plan(st)
 
 
 def main(argv=None) -> int:
