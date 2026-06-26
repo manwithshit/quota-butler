@@ -29,6 +29,7 @@ class State:
     last_action: Optional[str] = None
     last_chat_message_id: Optional[str] = None
     active_plan: Optional[Dict[str, Any]] = None
+    plans_by_date: Optional[Dict[str, Dict[str, Any]]] = None
     provider_snapshots: Optional[Dict[str, Dict[str, Any]]] = None
     muted_until: Optional[str] = None
     agent_statuses: Optional[Dict[str, Dict[str, Any]]] = None

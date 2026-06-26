@@ -134,9 +134,9 @@ def validate_work_time(work_start: str, work_end: str) -> int:
 def validate_warmup_times(first_warmup: str, second_warmup: str) -> int:
     first = _minutes(normalize_hhmm(first_warmup))
     second = _minutes(normalize_hhmm(second_warmup))
-    gap = second - first
+    gap = abs(second - first)
     if gap < MIN_WARMUP_GAP_MINUTES:
-        raise ValueError("两次预热时间至少需要间隔 5 小时")
+        raise ValueError("两个预热时间至少需要相隔 5 小时")
     return gap
 
 

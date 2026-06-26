@@ -77,6 +77,44 @@ class TestHandler(unittest.TestCase):
         self.assertNotIn("task_type", str(card))
         self.assertNotIn("intensity", str(card))
 
+    @mock.patch("quota_butler.handler.push_current_plans_card")
+    def test_schedule_intent_shows_existing_tomorrow_plan_before_time_picker(self, push):
+        from quota_butler import state as state_mod
+
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                plans_by_date={
+                    tomorrow: {
+                        "plan_id": "tomorrow-plan",
+                        "plan_version": 3,
+                        "status": "active",
+                        "agents": ["codex"],
+                        "work_start": f"{tomorrow}T09:00:00",
+                        "work_end": f"{tomorrow}T16:31:00",
+                        "tasks": [
+                            {
+                                "provider": "codex",
+                                "scheduled_for": f"{tomorrow}T06:30:00",
+                                "status": "pending",
+                            }
+                        ],
+                    }
+                }
+            ),
+        )
+
+        rc = handler.handle(
+            {"action": "schedule_intent", "intent": "tomorrow"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        plans = push.call_args.args[0]
+        self.assertIn(tomorrow, plans)
+        self.assertEqual(plans[tomorrow]["plan_id"], "tomorrow-plan")
+
     @mock.patch("quota_butler.handler.push_interactive")
     @mock.patch("quota_butler.handler.detect_agents")
     def test_manual_warmup_opens_tool_picker(self, detect, push):
@@ -313,6 +351,212 @@ class TestHandler(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertIn("最新", receipt.call_args.args[0])
 
+    @mock.patch("quota_butler.handler.install_plan_tasks", return_value=[])
+    @mock.patch("quota_butler.handler.detect_agents")
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_today_plan_does_not_block_tomorrow_plan(self, receipt, detect, install):
+        from quota_butler import state as state_mod
+        detect.return_value = {"codex": _connected("codex", weekly_utilization=50)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                active_plan={
+                    "plan_id": "today",
+                    "plan_version": 3,
+                    "status": "active",
+                    "agents": ["codex"],
+                    "work_start": "2099-06-20T09:00:00",
+                    "work_end": "2099-06-20T16:31:00",
+                    "tasks": [
+                        {
+                            "provider": "codex",
+                            "scheduled_for": "2099-06-20T06:30:00",
+                            "status": "executed",
+                        }
+                    ],
+                }
+            ),
+        )
+        plan = {
+            "plan_id": "tomorrow",
+            "plan_version": 3,
+            "status": "proposed",
+            "agents": ["codex"],
+            "work_start": "2099-06-21T13:00:00",
+            "work_end": "2099-06-21T20:31:00",
+            "events": [
+                {"agent": "codex", "kind": "warmup", "at": "2099-06-21T10:30:00"},
+                {"agent": "codex", "kind": "warmup", "at": "2099-06-21T15:31:00"},
+            ],
+        }
+
+        rc = handler.handle(
+            {"action": "adopt_schedule", "plan": plan},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        install.assert_called_once()
+        saved = state_mod.load(self.state_path)
+        self.assertIn("2099-06-20", saved.plans_by_date)
+        self.assertIn("2099-06-21", saved.plans_by_date)
+        self.assertIn("已采用计划", receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.install_plan_tasks")
+    @mock.patch("quota_butler.handler.detect_agents")
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_same_day_plan_is_rejected(self, receipt, detect, install):
+        from quota_butler import state as state_mod
+        detect.return_value = {"codex": _connected("codex", weekly_utilization=50)}
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                plans_by_date={
+                    "2099-06-21": {
+                        "plan_id": "existing",
+                        "plan_version": 3,
+                        "status": "active",
+                        "agents": ["codex"],
+                        "work_start": "2099-06-21T09:00:00",
+                        "work_end": "2099-06-21T16:31:00",
+                        "tasks": [],
+                    }
+                }
+            ),
+        )
+        plan = {
+            "plan_id": "new",
+            "plan_version": 3,
+            "status": "proposed",
+            "agents": ["codex"],
+            "work_start": "2099-06-21T13:00:00",
+            "work_end": "2099-06-21T20:31:00",
+            "events": [
+                {"agent": "codex", "kind": "warmup", "at": "2099-06-21T10:30:00"},
+                {"agent": "codex", "kind": "warmup", "at": "2099-06-21T15:31:00"},
+            ],
+        }
+
+        rc = handler.handle(
+            {"action": "adopt_schedule", "plan": plan},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 4)
+        install.assert_not_called()
+        self.assertIn("已有计划", receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.install_plan_tasks", return_value=[])
+    @mock.patch("quota_butler.handler.detect_agents")
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_adopt_plan_sorts_reversed_warmup_times(self, receipt, detect, install):
+        from quota_butler import state as state_mod
+        detect.return_value = {"codex": _connected("codex", weekly_utilization=50)}
+        plan = {
+            "plan_id": "p123",
+            "plan_version": 3,
+            "status": "proposed",
+            "agents": ["codex"],
+            "work_start": "2099-06-21T09:00:00",
+            "work_end": "2099-06-21T16:31:00",
+            "events": [
+                {"agent": "codex", "kind": "warmup", "at": "2099-06-21T06:30:00"},
+                {"agent": "codex", "kind": "warmup", "at": "2099-06-21T11:31:00"},
+            ],
+        }
+
+        rc = handler.handle(
+            {
+                "action": "adopt_schedule",
+                "plan": plan,
+                "form_value": {"first_warmup": "18:30", "second_warmup": "11:31"},
+            },
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        saved = state_mod.load(self.state_path).plans_by_date["2099-06-21"]
+        self.assertEqual(
+            [event["at"][11:16] for event in saved["events"]],
+            ["11:31", "18:30"],
+        )
+        self.assertEqual(saved["work_end"][11:16], "23:30")
+        self.assertIn("已采用计划", receipt.call_args.args[0])
+
+    @mock.patch("quota_butler.handler.cancel_plan_tasks")
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_cancel_completed_plan_reports_nothing_to_cancel(self, receipt, cancel):
+        from quota_butler import state as state_mod
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                plans_by_date={
+                    "2099-06-21": {
+                        "plan_id": "done",
+                        "plan_version": 3,
+                        "status": "active",
+                        "agents": ["codex"],
+                        "work_start": "2099-06-21T09:00:00",
+                        "work_end": "2099-06-21T16:31:00",
+                        "tasks": [
+                            {
+                                "provider": "codex",
+                                "scheduled_for": "2099-06-21T06:30:00",
+                                "status": "executed",
+                            }
+                        ],
+                    }
+                }
+            ),
+        )
+
+        rc = handler.handle(
+            {"action": "cancel_schedule", "target_date": "2099-06-21"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        cancel.assert_not_called()
+        self.assertIn("没有可以取消", receipt.call_args.args[0])
+        self.assertIn("2099-06-21", state_mod.load(self.state_path).plans_by_date)
+
+    @mock.patch("quota_butler.handler.cancel_plan_tasks")
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_cancel_tomorrow_plan_does_not_restore_legacy_active_plan(self, receipt, cancel):
+        from quota_butler import state as state_mod
+
+        tomorrow = "2099-06-21"
+        record = {
+            "plan_id": "tomorrow",
+            "plan_version": 3,
+            "status": "active",
+            "agents": ["codex"],
+            "work_start": f"{tomorrow}T09:00:00",
+            "work_end": f"{tomorrow}T16:31:00",
+            "tasks": [
+                {
+                    "provider": "codex",
+                    "scheduled_for": f"{tomorrow}T06:30:00",
+                    "status": "pending",
+                }
+            ],
+        }
+        state_mod.save(
+            self.state_path,
+            state_mod.State(active_plan=dict(record), plans_by_date={tomorrow: record}),
+        )
+
+        rc = handler.handle(
+            {"action": "cancel_schedule", "target_date": tomorrow},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        saved = state_mod.load(self.state_path)
+        self.assertIsNone(saved.active_plan)
+        self.assertIsNone(saved.plans_by_date)
+        self.assertIn("已取消计划", receipt.call_args.args[0])
+
     @mock.patch("quota_butler.handler.push_receipt")
     @mock.patch("quota_butler.handler.get_provider")
     def test_immediate_warmup_supports_claude_without_second_confirmation(
@@ -455,7 +699,7 @@ class TestHandler(unittest.TestCase):
         from quota_butler import state as state_mod
         self.assertIsNone(state_mod.load(self.state_path).active_plan)
 
-    @mock.patch("quota_butler.handler.push_active_plan_card")
+    @mock.patch("quota_butler.handler.push_current_plans_card")
     def test_view_schedule_reconciles_unloaded_past_task_as_executed(self, push):
         from quota_butler import state as state_mod
         scheduled = (datetime.now() - timedelta(hours=1)).replace(microsecond=0)
@@ -490,8 +734,50 @@ class TestHandler(unittest.TestCase):
                 )
 
         self.assertEqual(rc, 0)
-        record = push.call_args.args[0]
+        record = next(iter(push.call_args.args[0].values()))
         self.assertEqual(record["tasks"][0]["status"], "executed")
+
+    @mock.patch("quota_butler.handler.push_receipt")
+    def test_view_schedule_prunes_future_pending_task_when_plist_was_deleted(self, receipt):
+        from quota_butler import state as state_mod
+
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        missing_plist = os.path.join(tempfile.gettempdir(), "quota-butler-missing.plist")
+        if os.path.exists(missing_plist):
+            os.unlink(missing_plist)
+        state_mod.save(
+            self.state_path,
+            state_mod.State(
+                active_plan={
+                    "plan_id": "ghost",
+                    "plan_version": 3,
+                    "status": "active",
+                    "work_start": f"{tomorrow}T09:00:00",
+                    "work_end": f"{tomorrow}T16:31:00",
+                    "agents": ["codex"],
+                    "tasks": [
+                        {
+                            "label": "com.quota-butler.plan.ghost.0",
+                            "plist_path": missing_plist,
+                            "provider": "codex",
+                            "scheduled_for": f"{tomorrow}T06:30:00",
+                            "status": "pending",
+                        }
+                    ],
+                }
+            ),
+        )
+
+        rc = handler.handle(
+            {"action": "view_schedule"},
+            config_path=self.config_path,
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertIn("当前没有生效计划", receipt.call_args.args[0])
+        saved = state_mod.load(self.state_path)
+        self.assertIsNone(saved.active_plan)
+        self.assertIsNone(saved.plans_by_date)
 
     @mock.patch("quota_butler.handler.push_receipt")
     def test_remind_only_old_callback_is_rejected(self, receipt):
