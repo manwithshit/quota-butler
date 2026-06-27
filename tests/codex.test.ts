@@ -2,7 +2,7 @@
 // token 过期（401）绝不触发 codex exec 刷新——否则免费档每 15 分钟轮询都会啃掉月额度。
 
 import { describe, it, expect, vi } from 'vitest';
-import { CodexProvider } from '../src/providers/codex.js';
+import { CodexProvider, formatCodexExecFailure } from '../src/providers/codex.js';
 import { ProviderError } from '../src/providers/base.js';
 
 const AUTH = { token: 't', accountId: 'a' };
@@ -61,5 +61,18 @@ describe('CodexProvider —— 感知侧刷新闸门', () => {
       refreshToken: async () => {},
     });
     await expect(p.readUsage({ allowRefresh: false })).rejects.toBeInstanceOf(ProviderError);
+  });
+
+  it('codex exec 模型不兼容 ChatGPT 账号时，给出远端配置指引', () => {
+    const raw = `Reading prompt from stdin...
+ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account."}}`;
+
+    const reason = formatCodexExecFailure(raw);
+
+    expect(reason).toContain('gpt-5.2-codex');
+    expect(reason).toContain('不支持 ChatGPT 账号');
+    expect(reason).toContain('QUOTA_BUTLER_CODEX_MODEL');
+    expect(reason).toContain('~/.codex/config.toml');
+    expect(reason).not.toContain('Reading prompt from stdin');
   });
 });

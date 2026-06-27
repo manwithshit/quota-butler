@@ -24,6 +24,7 @@ const AUTH_PATH = join(homedir(), '.codex', 'auth.json');
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const USER_AGENT = 'quota-butler/0.1';
 const HTTP_TIMEOUT_MS = 15000;
+const CODEX_MODEL_ENV = 'QUOTA_BUTLER_CODEX_MODEL';
 
 /** 副作用依赖注入口子：默认接真实实现，测试时可替换，免去 fs/网络/codex 二进制。 */
 export interface CodexHooks {
@@ -90,20 +91,14 @@ export class CodexProvider implements Provider {
     try {
       // 非 TTY（后台管道）下 codex exec 从 stdin 读 prompt——把 prompt 写进 stdin 再关闭。
       // --skip-git-repo-check：后台 CWD 多半不是 git 受信目录，不加 codex 直接退出码 1。
-      const p = execFileAsync('codex', ['exec', '--skip-git-repo-check'], { timeout: 120000 });
+      const p = execFileAsync('codex', codexExecArgs(), { timeout: 120000 });
       p.child.stdin?.end(`${prompt}\n`); // 带换行，跟 `echo "..." | codex exec` 完全一致
       const r = await p;
       return r.stdout.trim().slice(0, 200);
     } catch (e) {
       const err = e as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
       const raw = err.stderr || err.stdout || err.message || '';
-      // codex 会在前面刷一堆 skill 加载 ERROR + "Reading prompt from stdin"——过滤掉，真正的失败原因在后面。
-      const meaningful = raw
-        .split('\n')
-        .filter((l) => l.trim() && !/failed to load skill|Reading (prompt|additional input)/i.test(l))
-        .join(' ')
-        .trim();
-      const reason = err.killed ? '预热超时被终止（>120s）' : (meaningful || raw.trim()).slice(-200);
+      const reason = formatCodexExecFailure(raw, Boolean(err.killed), '预热超时被终止（>120s）');
       throw new ProviderError(`codex exec 失败: ${reason}`);
     }
   }
@@ -135,13 +130,38 @@ async function readAuth(): Promise<{ token: string; accountId: string }> {
 /** `codex exec "ping"` 强制 codex CLI 刷新 ~/.codex/auth.json 里的 token。会消耗额度，仅限非感知路径。 */
 async function refreshToken(): Promise<void> {
   try {
-    const p = execFileAsync('codex', ['exec', '--skip-git-repo-check'], { timeout: 45000 });
+    const p = execFileAsync('codex', codexExecArgs(), { timeout: 45000 });
     p.child.stdin?.end('ping\n'); // codex exec 从 stdin 读 prompt（带换行）
     await p;
   } catch (e) {
-    const err = e as { stderr?: string; message?: string };
-    throw new ProviderError(`调用 codex 刷新 token 失败: ${(err.stderr || err.message || '').slice(0, 200)}`, 'network');
+    const err = e as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
+    const raw = err.stderr || err.stdout || err.message || '';
+    throw new ProviderError(`调用 codex 刷新 token 失败: ${formatCodexExecFailure(raw, Boolean(err.killed), '刷新超时被终止（>45s）')}`, 'network');
   }
+}
+
+function codexExecArgs(): string[] {
+  const args = ['exec', '--skip-git-repo-check'];
+  const model = process.env[CODEX_MODEL_ENV]?.trim();
+  if (model) args.push('--model', model);
+  return args;
+}
+
+export function formatCodexExecFailure(raw: string, killed = false, timeoutMessage = '预热超时被终止'): string {
+  if (killed) return timeoutMessage;
+  // codex 会在前面刷一堆 skill 加载 ERROR + "Reading prompt from stdin"——过滤掉，真正的失败原因在后面。
+  const meaningful = raw
+    .split('\n')
+    .filter((l) => l.trim() && !/failed to load skill|Reading (prompt|additional input)/i.test(l))
+    .join(' ')
+    .trim();
+  const reason = meaningful || raw.trim();
+  const unsupportedChatgptModel = /The '([^']+)' model is not supported when using Codex with a ChatGPT account/i.exec(reason);
+  if (unsupportedChatgptModel) {
+    const model = unsupportedChatgptModel[1];
+    return `Codex CLI 当前模型 ${model} 不支持 ChatGPT 账号。请在远端机器的 ~/.codex/config.toml 改成账号可用模型，或给 quota-butler 进程设置 ${CODEX_MODEL_ENV}=<可用模型> 后重启。原始错误：${reason.slice(-200)}`;
+  }
+  return reason.slice(-200);
 }
 
 async function fetchUsage(token: string, accountId: string): Promise<{ status: number; body: string }> {
