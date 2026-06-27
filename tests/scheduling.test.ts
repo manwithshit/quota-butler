@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { usableForPlanning } from '../src/agent_status.js';
 import { activePlanIndex, planIsExpired, StateStore, type State } from '../src/state.js';
 import { buildCurrentPlansCard, buildManualWarmupCard } from '../src/notify.js';
@@ -120,6 +120,69 @@ describe('current plans and immediate warmup UX', () => {
 
     expect(receipts).toEqual(['✅ 已取消计划，未执行任务已删除']);
     expect(state.get().plansByDate[targetDate]).toBeUndefined();
+  });
+
+  it('recomputes tomorrow intent from click time instead of stale card date', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-27T10:00:00'));
+    const state = new StateStore(join(tmpdir(), `qb-intent-${Date.now()}-${Math.random()}.json`));
+    const cards: unknown[] = [];
+    try {
+      await handleAction(
+        { action: 'schedule_intent', intent: 'tomorrow', target_date: '2026-06-27' },
+        {
+          state,
+          send: async (card) => {
+            cards.push(card);
+          },
+          receipt: async () => {},
+        },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const text = JSON.stringify(cards[0]);
+    expect(text).toContain('2026-06-28');
+    expect(text).not.toContain('"target_date":"2026-06-27"');
+  });
+
+  it('rejects adopting a plan whose warmups are all in the past', async () => {
+    const state = new StateStore(join(tmpdir(), `qb-expired-adopt-${Date.now()}-${Math.random()}.json`));
+    const receipts: string[] = [];
+    const now = new Date();
+    const ymd = now.toISOString().slice(0, 10);
+    const past1 = new Date(now.getTime() - 2 * 3600000).toISOString();
+    const past2 = new Date(now.getTime() - 3600000).toISOString();
+    const candidate = {
+      plan_id: 'expired-warmups',
+      status: 'proposed',
+      plan_version: 3,
+      agents: ['codex'],
+      work_start: `${ymd}T00:00:00`,
+      work_end: new Date(now.getTime() + 3600000).toISOString(),
+      reason: 'test',
+      events: [
+        { agent: 'codex', kind: 'warmup', at: past1, purpose: 'past 1' },
+        { agent: 'codex', kind: 'warmup', at: past2, purpose: 'past 2' },
+      ],
+      request: { target_date: ymd, time_mode: 'point', work_start: '09:00', work_end: '16:31', agent_strategy: 'auto' },
+    };
+
+    await handleAction(
+      { action: 'adopt_schedule', plan: candidate },
+      {
+        state,
+        send: async () => {},
+        receipt: async (message) => {
+          receipts.push(message);
+        },
+      },
+    );
+
+    expect(receipts).toEqual(['❌ 该计划的预热时间已过，请重新生成计划']);
+    expect(state.get().activePlan).toBeNull();
+    expect(state.get().plansByDate).toEqual({});
   });
 
   it('immediate warmup no-op card stays terse when nothing can warm up now', () => {

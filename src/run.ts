@@ -9,44 +9,51 @@ import type { Card } from './notify.js';
 import { Poller } from './poller.js';
 import { WarmupScheduler } from './scheduler.js';
 import { StateStore } from './state.js';
+import { acquireRunLock } from './run_lock.js';
 
 export async function run(): Promise<void> {
-  let cfg = loadConfig();
-  if (!cfg) {
-    cfg = await runRegistrationWizard();
-    saveConfig(cfg);
+  const lock = acquireRunLock();
+  try {
+    let cfg = loadConfig();
+    if (!cfg) {
+      cfg = await runRegistrationWizard();
+      saveConfig(cfg);
+    }
+
+    const state = new StateStore();
+    const { channel, ownerId } = await connectChannel(cfg);
+    const scheduler = new WarmupScheduler(channel, ownerId, state);
+    scheduler.rearmFromState(); // 重启后按 active plan 重新布预热点
+    const poller = new Poller(channel, ownerId, state);
+    poller.start(); // 15min 轮询恢复提醒 + 22:00 睡前
+
+    console.log(`[quota-butler] 单实例锁已获取：${lock.path}`);
+    console.log(`[quota-butler] 已连接飞书。owner=${ownerId ?? '(未解析到，先不做 owner 过滤)'}`);
+    console.log('[quota-butler] 私聊发"额度"查额度、"菜单"看功能、"明日计划"做计划。Ctrl-C 退出。');
+
+    channel.on('message', async (m: NormalizedMessage) => {
+      if (ownerId && m.senderId !== ownerId) return;
+      const action = textToAction(m.content || '');
+      if (!action) return;
+      await safe(() => handleAction(action, makeCtx(channel, m.chatId, state, scheduler, m.senderId)));
+    });
+
+    channel.on('cardAction', (evt: CardActionEvent) => {
+      if (ownerId && evt.operator.openId !== ownerId) return;
+      const payload: Record<string, unknown> = {
+        ...((evt.action.value as Record<string, unknown>) ?? {}),
+        form_value: evt.action.formValue,
+      };
+      // 立即返回让 SDK 快速 ack 回调（否则飞书弹"回调未响应"），实际处理异步进行。
+      void safe(() => handleAction(payload, makeCtx(channel, evt.chatId, state, scheduler, evt.operator.openId)));
+    });
+
+    channel.on('error', (err) => console.error('[quota-butler] channel error:', err));
+
+    await new Promise<never>(() => {}); // 常驻
+  } finally {
+    lock.release();
   }
-
-  const state = new StateStore();
-  const { channel, ownerId } = await connectChannel(cfg);
-  const scheduler = new WarmupScheduler(channel, ownerId, state);
-  scheduler.rearmFromState(); // 重启后按 active plan 重新布预热点
-  const poller = new Poller(channel, ownerId, state);
-  poller.start(); // 15min 轮询恢复提醒 + 22:00 睡前
-
-  console.log(`[quota-butler] 已连接飞书。owner=${ownerId ?? '(未解析到，先不做 owner 过滤)'}`);
-  console.log('[quota-butler] 私聊发"额度"查额度、"菜单"看功能、"明日计划"做计划。Ctrl-C 退出。');
-
-  channel.on('message', async (m: NormalizedMessage) => {
-    if (ownerId && m.senderId !== ownerId) return;
-    const action = textToAction(m.content || '');
-    if (!action) return;
-    await safe(() => handleAction(action, makeCtx(channel, m.chatId, state, scheduler)));
-  });
-
-  channel.on('cardAction', (evt: CardActionEvent) => {
-    if (ownerId && evt.operator.openId !== ownerId) return;
-    const payload: Record<string, unknown> = {
-      ...((evt.action.value as Record<string, unknown>) ?? {}),
-      form_value: evt.action.formValue,
-    };
-    // 立即返回让 SDK 快速 ack 回调（否则飞书弹"回调未响应"），实际处理异步进行。
-    void safe(() => handleAction(payload, makeCtx(channel, evt.chatId, state, scheduler)));
-  });
-
-  channel.on('error', (err) => console.error('[quota-butler] channel error:', err));
-
-  await new Promise<never>(() => {}); // 常驻
 }
 
 function makeCtx(
@@ -54,10 +61,13 @@ function makeCtx(
   chatId: string,
   state: StateStore,
   scheduler: WarmupScheduler,
+  userId?: string,
 ): HandlerCtx {
   return {
     state,
     scheduler,
+    chatId,
+    userId,
     send: async (card: Card) => {
       await channel.send(chatId, { card });
     },

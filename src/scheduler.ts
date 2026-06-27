@@ -19,6 +19,11 @@ interface EventRec {
   purpose: string;
 }
 
+export interface ArmResult {
+  armed: number;
+  skipped: number;
+}
+
 export class WarmupScheduler {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -37,23 +42,29 @@ export class WarmupScheduler {
   }
 
   /** 给多个计划布置未来预热定时器（用于今日 + 明日并存）。 */
-  armPlans(records: Array<Record<string, unknown>>): void {
+  armPlans(records: Array<Record<string, unknown>>): ArmResult {
     this.cancelAll();
-    for (const record of records) this.armOne(record);
+    const total: ArmResult = { armed: 0, skipped: 0 };
+    for (const record of records) {
+      const result = this.armOne(record);
+      total.armed += result.armed;
+      total.skipped += result.skipped;
+    }
+    return total;
   }
 
   /** 给一个计划布置全部未来预热定时器（先清旧）。 */
-  arm(record: Record<string, unknown>): void {
-    this.armPlans([record]);
+  arm(record: Record<string, unknown>): ArmResult {
+    return this.armPlans([record]);
   }
 
-  private armOne(record: Record<string, unknown>): void {
+  private armOne(record: Record<string, unknown>): ArmResult {
     const st = this.state.get();
     if (planIsExpired(record, new Date())) {
       activePlanIndex(st);
       st.executedWarmups = [];
       this.state.save();
-      return;
+      return { armed: 0, skipped: 0 };
     }
     const planId = String(record['plan_id'] ?? '');
     const events = (record['events'] as EventRec[] | undefined) ?? [];
@@ -74,6 +85,7 @@ export class WarmupScheduler {
       armed += 1;
     }
     console.log(`[scheduler] ${planId} 已布置 ${armed} 个预热节点，跳过 ${skipped} 个（过期/已执行）。`);
+    return { armed, skipped };
   }
 
   cancelAll(): void {

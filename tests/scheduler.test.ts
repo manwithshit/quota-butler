@@ -20,7 +20,7 @@ describe('WarmupScheduler.arm', () => {
     const future2 = new Date(Date.now() + 7200000).toISOString();
     state.get().executedWarmups = [`p1:cc:${future}`]; // 这个未来节点已执行过
 
-    sch.arm({
+    const result = sch.arm({
       plan_id: 'p1',
       status: 'active',
       events: [
@@ -30,6 +30,7 @@ describe('WarmupScheduler.arm', () => {
       ],
     });
 
+    expect(result).toEqual({ armed: 1, skipped: 2 });
     expect(sch.pending).toBe(1);
     sch.cancelAll();
     expect(sch.pending).toBe(0);
@@ -40,12 +41,13 @@ describe('WarmupScheduler.arm', () => {
     const sch = new WarmupScheduler(fakeChannel, 'ou_x', state);
     const future = new Date(Date.now() + 3600000).toISOString();
 
-    sch.arm({
+    const result = sch.arm({
       plan_id: 'legacy',
       status: 'active',
       events: [{ agent: 'cc', at: future, purpose: '' }],
     });
 
+    expect(result).toEqual({ armed: 1, skipped: 0 });
     expect(sch.pending).toBe(1);
     sch.cancelAll();
   });

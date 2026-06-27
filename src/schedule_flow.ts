@@ -75,7 +75,7 @@ export function validateFlowContext(
   const target = parseIsoDate(String(payload['target_date'] ?? ''));
   if (!target) throw new Error('规划日期无效');
   const todayStr = today ?? todayLocalIso();
-  if (target < todayStr) throw new Error('该卡片已过期，请重新规划');
+  if (target <= todayStr) throw new Error('该卡片已过期，请重新规划');
   return target;
 }
 
