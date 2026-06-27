@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePlanRequest, validateWorkTime } from '../src/schedule_flow.js';
+import { parsePlanRequest, validateFlowContext, validateWorkTime } from '../src/schedule_flow.js';
 
 describe('schedule flow', () => {
   it('point mode creates the default 7.5h single-agent window', () => {
@@ -42,5 +42,10 @@ describe('schedule flow', () => {
       first_warmup: '06:30',
       second_warmup: '07:30',
     }, 1)).toThrow('5 小时');
+  });
+
+  it('treats same-day flow cards as expired', () => {
+    expect(() => validateFlowContext({ flow_version: 5, target_date: '2026-06-27' }, '2026-06-27')).toThrow('已过期');
+    expect(validateFlowContext({ flow_version: 5, target_date: '2026-06-28' }, '2026-06-27')).toBe('2026-06-28');
   });
 });

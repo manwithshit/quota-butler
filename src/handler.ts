@@ -34,6 +34,14 @@ export interface HandlerCtx {
   send: (card: Card) => Promise<void>;
   receipt: (text: string) => Promise<void>;
   scheduler?: WarmupScheduler;
+  chatId?: string;
+  userId?: string;
+}
+
+interface WarmupEventLike {
+  kind?: unknown;
+  type?: unknown;
+  at?: unknown;
 }
 
 export async function handleAction(payload: Record<string, unknown>, ctx: HandlerCtx): Promise<void> {
@@ -41,6 +49,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
   const st = ctx.state.get();
   st.lastAction = action;
   st.lastRunAt = new Date().toISOString();
+  logAction(payload, st, ctx);
 
   switch (action) {
     case 'menu':
@@ -74,7 +83,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
       const target = targetDate(payload);
       const plans = activePlanIndex(st);
       if (plans[target]) return ctx.send(buildCurrentPlansCard(plansForDisplay(plans, st.executedWarmups)));
-      return ctx.send(buildTimeModeCard(targetDate(payload), st.lastPlanRequest));
+      return ctx.send(buildTimeModeCard(target, st.lastPlanRequest));
     }
 
     case 'schedule_flow':
@@ -271,6 +280,9 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
       return ctx.send(buildCurrentPlansCard(plansForDisplay(plans, st.executedWarmups)));
     }
     record = validatePlanRecord(adjusted);
+    if (!hasFutureWarmup(record, new Date())) {
+      return ctx.receipt('❌ 该计划的预热时间已过，请重新生成计划');
+    }
   } catch (e) {
     return ctx.receipt(`❌ 计划不可采用：${(e as Error).message}`);
   }
@@ -295,8 +307,11 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
     agentStrategy: String(r['agent_strategy'] ?? 'auto'),
   };
   ctx.state.save();
-  ctx.scheduler?.armPlans(Object.values(st.plansByDate));
-  return ctx.receipt(`✅ 已采用计划，已创建 ${record.events.length} 个预热任务`);
+  const result = ctx.scheduler?.armPlans(Object.values(st.plansByDate));
+  const armed = result?.armed ?? countFutureWarmups(record, new Date());
+  const skipped = result?.skipped ?? Math.max(0, record.events.length - armed);
+  const skipText = skipped > 0 ? `，跳过 ${skipped} 个过期/已执行任务` : '';
+  return ctx.receipt(`✅ 已采用计划，已布置 ${armed} 个预热任务${skipText}`);
 }
 
 async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promise<void> {
@@ -336,12 +351,49 @@ async function sendExistingPlan(plan: Record<string, unknown>, ctx: HandlerCtx):
 }
 
 function targetDate(payload: Record<string, unknown>): string {
+  if (String(payload['intent'] ?? '') === 'tomorrow') return tomorrowIso();
   const raw = String(payload['target_date'] ?? '');
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return tomorrowIso();
+}
+
+function tomorrowIso(): string {
   const d = new Date();
   d.setDate(d.getDate() + 1);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function hasFutureWarmup(plan: { events: WarmupEventLike[] }, now: Date): boolean {
+  return countFutureWarmups(plan, now) > 0;
+}
+
+function countFutureWarmups(plan: { events: WarmupEventLike[] }, now: Date): number {
+  return plan.events.filter((ev) => {
+    const kind = String(ev.kind ?? ev.type ?? 'warmup');
+    const at = new Date(String(ev.at)).getTime();
+    return kind === 'warmup' && !Number.isNaN(at) && at > now.getTime();
+  }).length;
+}
+
+function logAction(
+  payload: Record<string, unknown>,
+  st: { activePlan: unknown; plansByDate: Record<string, Record<string, unknown>> },
+  ctx: Pick<HandlerCtx, 'chatId' | 'userId'>,
+): void {
+  const active = st.activePlan as Record<string, unknown> | null;
+  const plan = payload['plan'] as Record<string, unknown> | undefined;
+  const summary = {
+    action: String(payload['action'] ?? ''),
+    pid: process.pid,
+    chat_id: ctx.chatId ?? '',
+    user_id: ctx.userId ?? '',
+    target_date: String(payload['target_date'] ?? ''),
+    plan_id: String(payload['plan_id'] ?? plan?.['plan_id'] ?? ''),
+    active_plan_id: String(active?.['plan_id'] ?? ''),
+    plan_dates: Object.keys(st.plansByDate ?? {}).sort(),
+  };
+  console.log(`[handler] action ${JSON.stringify(summary)}`);
 }
 
 function plansForDisplay(plans: Record<string, Record<string, unknown>>, executedWarmups: string[]): Record<string, Record<string, unknown>> {
