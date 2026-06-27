@@ -56,6 +56,9 @@ export interface State {
   pendingNotifications: Array<{ provider: string; windowKey: string }>;
   lastWarmedWindows: Record<string, string>;
   lastRecoveryNotifiedWindows: Record<string, string>;
+  // 每个 provider 上次"真正发出"恢复卡的时刻（ISO）。冷却兜底用：
+  // 即便去重 key 被击穿或崩溃重发，同一家恢复卡在冷却窗口内也只发一张，杜绝刷屏。
+  lastRecoverySentAt: Record<string, string>;
   lastBedtimePromptDate: string | null;
   providerSnapshots: Record<string, { utilization: number; resetAt: string | null }>;
   // 上次成功读到的各家档位（monthly-only=免费档 Codex / has-5h=付费档/CC）。
@@ -79,6 +82,7 @@ function defaultState(): State {
     pendingNotifications: [],
     lastWarmedWindows: {},
     lastRecoveryNotifiedWindows: {},
+    lastRecoverySentAt: {},
     lastBedtimePromptDate: null,
     providerSnapshots: {},
     providerTiers: {},

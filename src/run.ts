@@ -9,10 +9,20 @@ import type { Card } from './notify.js';
 import { Poller } from './poller.js';
 import { WarmupScheduler } from './scheduler.js';
 import { StateStore } from './state.js';
-import { acquireRunLock } from './run_lock.js';
+import { acquireRunLock, RunLockHeldError } from './run_lock.js';
 
 export async function run(): Promise<void> {
-  const lock = acquireRunLock();
+  let lock;
+  try {
+    lock = acquireRunLock();
+  } catch (e) {
+    if (e instanceof RunLockHeldError) {
+      // 已有实例在跑：安静退出（exit 0），避免 launchd KeepAlive 把它当崩溃反复重启 → 重复推送。
+      console.error(e.message);
+      return;
+    }
+    throw e;
+  }
   try {
     let cfg = loadConfig();
     if (!cfg) {
