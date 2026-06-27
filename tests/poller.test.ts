@@ -117,4 +117,77 @@ describe('Poller deferred notifications (P0)', () => {
 
     poller.stop();
   });
+
+  it('dedups recovery across resetAt drift within tolerance (no duplicate card)', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerSnapshots = {
+      cc: { utilization: 90, resetAt: new Date(2026, 5, 24, 11, 0).toISOString() },
+    };
+
+    // tick #1 @11:10：cc 翻篇（util 0），上一窗口重置点 11:00 → 发一张恢复卡。
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 10));
+    mockDetect.mockResolvedValue(ccStatus(0, new Date(2026, 5, 24, 16, 0)));
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+    expect(sends).toHaveLength(1);
+
+    // tick #2 @11:12：后端把同一窗口的 resetAt 漂了 +40s（11:00:40）。
+    // 精确等值会判成"新窗口"重发；容差去重应判为同窗 → 不再发。
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 12));
+    state.get().providerSnapshots = {
+      cc: { utilization: 90, resetAt: new Date(2026, 5, 24, 11, 0, 40).toISOString() },
+    };
+    mockDetect.mockResolvedValue(ccStatus(0, new Date(2026, 5, 24, 16, 0)));
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+    expect(sends).toHaveLength(1); // 仍是 1 张，没重发
+  });
+
+  it('cooldown backstop drops a re-queued recovery card within 30min', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 0));
+    // 队列里已有一张待发；模拟"刚发过"（10:50）。
+    state.get().pendingNotifications = [{ provider: 'codex', windowKey: 'codex:2026-06-24T11:00:00.000Z' }];
+    state.get().lastRecoverySentAt = { codex: new Date(2026, 5, 24, 10, 50).toISOString() };
+
+    await (poller as unknown as { flushNotifications: () => Promise<void> }).flushNotifications();
+    expect(sends).toHaveLength(0); // 冷却期内丢弃，不发
+    expect(state.get().pendingNotifications).toHaveLength(0); // 已出队，不会无限重试
+  });
+
+  it('schedules a reset-check from last-good snapshot when CC is currently unreadable', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    // last-good 快照：cc 5h 窗口将于 12:05 重置（但当前读不到 cc）。
+    state.get().usageSnapshots = {
+      cc: {
+        fiveHourUtil: 95,
+        fiveHourResetAt: new Date(2026, 5, 24, 12, 5, 0).toISOString(),
+        sevenDayUtil: 10,
+        capturedAt: new Date(2026, 5, 24, 11, 0, 0).toISOString(),
+      },
+    };
+
+    // tick @12:00：cc 令牌过期读不到（detect 返回空）→ 仍应据快照排 12:06:30 复查。
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 0, 0));
+    mockDetect.mockResolvedValue({});
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+    expect(sends).toHaveLength(0);
+
+    // 12:06:30：cc 恢复可读（token 自愈，util 0、新窗口 17:05），复查当场抓到 → 发卡。
+    state.get().providerSnapshots = {
+      cc: { utilization: 95, resetAt: new Date(2026, 5, 24, 12, 5, 0).toISOString() },
+    };
+    mockDetect.mockResolvedValue(ccStatus(0, new Date(2026, 5, 24, 17, 5, 0)));
+    await vi.advanceTimersByTimeAsync(6 * 60_000 + 30_000);
+    expect(sends).toHaveLength(1);
+
+    poller.stop();
+  });
 });

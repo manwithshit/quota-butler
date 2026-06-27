@@ -9,13 +9,21 @@ export interface RunLock {
   release: () => void;
 }
 
+/** 锁已被另一个存活进程持有。调用方应据此"安静退出"（exit 0），不要当崩溃让 launchd 狂重启。 */
+export class RunLockHeldError extends Error {
+  constructor(public readonly pid: number) {
+    super(`quota-butler run 已在运行（PID ${pid}）。请先停止旧进程，或执行 quota-butler stop 后再启动。`);
+    this.name = 'RunLockHeldError';
+  }
+}
+
 export function acquireRunLock(path = DEFAULT_LOCK_PATH): RunLock {
   mkdirSync(dirname(path), { recursive: true });
   let fd = tryCreate(path);
   if (fd == null) {
     const pid = readLockPid(path);
     if (pid && processIsAlive(pid)) {
-      throw new Error(`quota-butler run 已在运行（PID ${pid}）。请先停止旧进程，或执行 quota-butler stop 后再启动。`);
+      throw new RunLockHeldError(pid);
     }
     try {
       unlinkSync(path);
