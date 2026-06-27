@@ -27,6 +27,16 @@ export interface AgentStatus {
   detail?: string;
 }
 
+export interface PlanningUsageSnapshot {
+  fiveHourUtil: number | null;
+  fiveHourResetAt: string | null;
+  sevenDayUtil: number | null;
+  sevenDayResetAt?: string | null;
+  monthlyUtil?: number | null;
+  monthlyResetAt?: string | null;
+  capturedAt: string;
+}
+
 export function isSchedulable(s: AgentStatus): boolean {
   return s.state === AgentState.CONNECTED && s.usage != null;
 }
@@ -40,9 +50,64 @@ const PLANNING_MIN_WEEKLY_REMAINING = 10;
  *     无 5h 可换挡、且预热会烧月度额度，故不参与规划（仍可在额度卡里查看）。
  *  2) 周额度还有余量（周见底=排了也用不了）。 */
 export function usableForPlanning(usage: Usage): boolean {
+  return usableForPlanningAt(usage, new Date());
+}
+
+export function usableForPlanningAt(usage: Usage, planningAt: Date): boolean {
   if (!usage.fiveHour) return false;
-  if (usage.sevenDay && 100 - usage.sevenDay.utilization < PLANNING_MIN_WEEKLY_REMAINING) return false;
+  if (usage.sevenDay && 100 - usage.sevenDay.utilization < PLANNING_MIN_WEEKLY_REMAINING) {
+    const reset = usage.sevenDay.resetsAt;
+    if (!reset || reset.getTime() > planningAt.getTime()) return false;
+  }
   return true;
+}
+
+const PLANNING_SNAPSHOT_MAX_AGE_MS = 24 * 3600_000;
+
+export function planningUsageForStatus(
+  status: AgentStatus,
+  snapshot: PlanningUsageSnapshot | undefined,
+  planningAt: Date,
+): Usage | null {
+  if (status.state === AgentState.CONNECTED && status.usage) {
+    return usableForPlanningAt(status.usage, planningAt) ? status.usage : null;
+  }
+  if (status.state !== AgentState.UNAVAILABLE) return null;
+  const usage = usageFromSnapshot(status.provider, snapshot);
+  return usage && usableForPlanningAt(usage, planningAt) ? usage : null;
+}
+
+function usageFromSnapshot(provider: string, snapshot: PlanningUsageSnapshot | undefined): Usage | null {
+  if (!snapshot || snapshot.fiveHourUtil == null) return null;
+  const capturedAt = new Date(snapshot.capturedAt).getTime();
+  if (Number.isNaN(capturedAt) || Math.max(0, Date.now() - capturedAt) > PLANNING_SNAPSHOT_MAX_AGE_MS) return null;
+  const hasSevenDayReset = Object.prototype.hasOwnProperty.call(snapshot, 'sevenDayResetAt');
+  return {
+    provider,
+    fiveHour: {
+      utilization: snapshot.fiveHourUtil,
+      resetsAt: parseSnapshotDate(snapshot.fiveHourResetAt),
+      windowSeconds: 5 * 3600,
+    },
+    // 旧版 state 没有 sevenDayResetAt；此时不要把"周额度 100%"当作确定不可用，
+    // 否则刚升级后仍会因为旧快照误判明日不可规划。
+    sevenDay: snapshot.sevenDayUtil == null || (!hasSevenDayReset && 100 - snapshot.sevenDayUtil < PLANNING_MIN_WEEKLY_REMAINING) ? null : {
+      utilization: snapshot.sevenDayUtil,
+      resetsAt: parseSnapshotDate(snapshot.sevenDayResetAt),
+      windowSeconds: 7 * 86400,
+    },
+    monthly: snapshot.monthlyUtil == null ? null : {
+      utilization: snapshot.monthlyUtil,
+      resetsAt: parseSnapshotDate(snapshot.monthlyResetAt),
+      windowSeconds: 30 * 86400,
+    },
+  };
+}
+
+function parseSnapshotDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /** detectAgents 调用语境。

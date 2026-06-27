@@ -1,7 +1,7 @@
 // 卡片回调 / 文字命令路由。移植自 Python handler.py。
 // M2：完整规划交互闭环；adopt 仅标记 active（预热实际调度在 M3）。
 
-import { AgentState, detectAgents, isSchedulable, usableForPlanning } from './agent_status.js';
+import { AgentState, detectAgents, isSchedulable, planningUsageForStatus, usableForPlanning, type PlanningUsageSnapshot } from './agent_status.js';
 import {
   buildActivePlanCard,
   buildAgentControlCard,
@@ -229,13 +229,12 @@ async function handleScheduleFlow(payload: Record<string, unknown>, ctx: Handler
   if (payload['agent_strategy']) requestRaw['agent_strategy'] = payload['agent_strategy'];
 
   const statuses = await detectAgents();
-  const usages: Record<string, Usage> = {};
   for (const [provider, s] of Object.entries(statuses)) {
     if (s.usage) ctx.state.recordUsageSnapshot(provider, s.usage);
-    // 周额度见底的 Agent 不进规划候选（排了也用不了）。
-    if (isSchedulable(s) && s.usage && usableForPlanning(s.usage)) usages[provider] = s.usage;
   }
   ctx.state.save();
+  const planningAt = planningReferenceTime(requestRaw);
+  const usages = collectPlanningUsages(statuses, ctx.state.get().usageSnapshots, planningAt);
   if (Object.keys(usages).length === 0) {
     return ctx.receipt('暂时没有可用于规划的 AI 工具（5 小时或周额度已见底）');
   }
@@ -287,8 +286,12 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
     return ctx.receipt(`❌ 计划不可采用：${(e as Error).message}`);
   }
   const statuses = await detectAgents(record.agents);
+  for (const [provider, s] of Object.entries(statuses)) if (s.usage) ctx.state.recordUsageSnapshot(provider, s.usage);
+  ctx.state.save();
+  const planningAt = new Date(record.work_start);
+  const usages = collectPlanningUsages(statuses, ctx.state.get().usageSnapshots, planningAt);
   const unavailable = record.agents.filter(
-    (p) => !statuses[p] || !isSchedulable(statuses[p]!) || !(statuses[p]!.usage && usableForPlanning(statuses[p]!.usage!)),
+    (p) => !statuses[p] || !usages[p],
   );
   if (unavailable.length) {
     return ctx.receipt(`❌ AI 工具状态已变化，请重新生成计划：${unavailable.join('、')}`);
@@ -362,6 +365,26 @@ function tomorrowIso(): string {
   d.setDate(d.getDate() + 1);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function collectPlanningUsages(
+  statuses: Record<string, { provider: string; state: AgentState; usage?: Usage; detail?: string }>,
+  snapshots: Record<string, PlanningUsageSnapshot>,
+  planningAt: Date,
+): Record<string, Usage> {
+  const usages: Record<string, Usage> = {};
+  for (const [provider, status] of Object.entries(statuses)) {
+    const usage = planningUsageForStatus(status, snapshots[provider], planningAt);
+    if (usage) usages[provider] = usage;
+  }
+  return usages;
+}
+
+function planningReferenceTime(raw: Record<string, unknown>): Date {
+  const target = String(raw['target_date'] ?? '');
+  const start = String(raw['work_start'] ?? '09:00').split(/\s+/)[0] ?? '09:00';
+  const d = new Date(`${target}T${start}:00`);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
 }
 
 function hasFutureWarmup(plan: { events: WarmupEventLike[] }, now: Date): boolean {

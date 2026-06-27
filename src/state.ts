@@ -12,7 +12,9 @@ export interface UsageSnapshot {
   fiveHourUtil: number | null; // 免费档 Codex 无 5h 窗口 → null
   fiveHourResetAt: string | null;
   sevenDayUtil: number | null;
+  sevenDayResetAt?: string | null;
   monthlyUtil?: number | null; // 免费档 Codex 月度窗口
+  monthlyResetAt?: string | null;
   capturedAt: string; // ISO
 }
 
@@ -135,7 +137,9 @@ export class StateStore {
       fiveHourUtil: usage.fiveHour ? usage.fiveHour.utilization : null,
       fiveHourResetAt: usage.fiveHour?.resetsAt ? usage.fiveHour.resetsAt.toISOString() : null,
       sevenDayUtil: usage.sevenDay ? usage.sevenDay.utilization : null,
+      sevenDayResetAt: usage.sevenDay?.resetsAt ? usage.sevenDay.resetsAt.toISOString() : null,
       monthlyUtil: usage.monthly ? usage.monthly.utilization : null,
+      monthlyResetAt: usage.monthly?.resetsAt ? usage.monthly.resetsAt.toISOString() : null,
       capturedAt: new Date().toISOString(),
     };
   }
