@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { usableForPlanning } from '../src/agent_status.js';
+import { planningUsageForStatus, usableForPlanning, usableForPlanningAt } from '../src/agent_status.js';
 import { activePlanIndex, planIsExpired, StateStore, type State } from '../src/state.js';
 import { buildCurrentPlansCard, buildManualWarmupCard } from '../src/notify.js';
 import { AgentState, type AgentStatus } from '../src/agent_status.js';
@@ -40,6 +40,83 @@ describe('usableForPlanning', () => {
       monthly: { utilization: 20, resetsAt: null, windowSeconds: 2592000 },
     };
     expect(usableForPlanning(freeCodex)).toBe(false);
+  });
+
+  it('allows a depleted weekly quota when it resets before the planned work time', () => {
+    const usage: Usage = {
+      provider: 'cc',
+      fiveHour: { utilization: 100, resetsAt: null, windowSeconds: 18000 },
+      sevenDay: { utilization: 100, resetsAt: new Date('2026-06-28T00:30:00'), windowSeconds: 604800 },
+    };
+
+    expect(usableForPlanningAt(usage, new Date('2026-06-28T10:30:00'))).toBe(true);
+    expect(usableForPlanningAt(usage, new Date('2026-06-27T10:30:00'))).toBe(false);
+  });
+
+  it('uses a recent unavailable-agent snapshot for tomorrow planning', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-27T14:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'cc', state: AgentState.UNAVAILABLE, detail: '暂时无法读取' },
+        {
+          fiveHourUtil: 0,
+          fiveHourResetAt: '2026-06-27T16:30:00.000Z',
+          sevenDayUtil: 100,
+          sevenDayResetAt: '2026-06-27T20:00:00.000Z',
+          capturedAt: '2026-06-27T12:00:00.000Z',
+        },
+        new Date('2026-06-28T10:30:00'),
+      );
+
+      expect(usage?.provider).toBe('cc');
+      expect(usage?.sevenDay?.resetsAt?.toISOString()).toBe('2026-06-27T20:00:00.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats legacy snapshots without weekly reset time as unknown instead of depleted', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-27T14:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'cc', state: AgentState.UNAVAILABLE, detail: '暂时无法读取' },
+        {
+          fiveHourUtil: 0,
+          fiveHourResetAt: null,
+          sevenDayUtil: 100,
+          capturedAt: '2026-06-27T12:00:00.000Z',
+        },
+        new Date('2026-06-28T10:30:00'),
+      );
+
+      expect(usage?.provider).toBe('cc');
+      expect(usage?.sevenDay).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not use stale unavailable-agent snapshots for planning', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-27T14:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'cc', state: AgentState.UNAVAILABLE, detail: '暂时无法读取' },
+        {
+          fiveHourUtil: 0,
+          fiveHourResetAt: null,
+          sevenDayUtil: null,
+          capturedAt: '2026-06-25T12:00:00.000Z',
+        },
+        new Date('2026-06-28T10:30:00'),
+      );
+
+      expect(usage).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
