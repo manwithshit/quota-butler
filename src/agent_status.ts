@@ -72,8 +72,11 @@ export function planningUsageForStatus(
   if (status.state === AgentState.CONNECTED && status.usage) {
     return usableForPlanningAt(status.usage, planningAt) ? status.usage : null;
   }
-  if (status.state !== AgentState.UNAVAILABLE) return null;
+  if (status.state !== AgentState.UNAVAILABLE && status.state !== AgentState.TOKEN_STALE) return null;
   const usage = usageFromSnapshot(status.provider, snapshot);
+  if (usage) {
+    console.log(`[planning] provider=${status.provider} state=${status.state} snapshot=yes`);
+  }
   return usage && usableForPlanningAt(usage, planningAt) ? usage : null;
 }
 
