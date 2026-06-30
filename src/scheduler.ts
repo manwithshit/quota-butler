@@ -26,6 +26,7 @@ export interface ArmResult {
 
 export class WarmupScheduler {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private quietFlushTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly channel: LarkChannel,
@@ -37,6 +38,7 @@ export class WarmupScheduler {
   rearmFromState(): void {
     const st = this.state.get();
     const plans = activePlanIndex(st);
+    this.scheduleQuietFlush(new Date());
     if (Object.keys(plans).length === 0) return;
     this.armPlans(Object.values(plans));
   }
@@ -91,6 +93,8 @@ export class WarmupScheduler {
   cancelAll(): void {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    if (this.quietFlushTimer) clearTimeout(this.quietFlushTimer);
+    this.quietFlushTimer = undefined;
   }
 
   /** 当前已布置的定时器数（测试/诊断用）。 */
@@ -111,7 +115,7 @@ export class WarmupScheduler {
       st.executedWarmups.push(key);
       this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'skip', detail: hm(ev.at) });
       this.state.save();
-      await this.notify(`⏭️ 跳过 ${label} 的预热（${hm(ev.at)} 已过时，可能因睡眠/关机错过）。`);
+      await this.notify(`⏭️ 跳过 ${label} 的预热（${hm(ev.at)} 已过时，可能因睡眠/关机错过）。`, { respectQuiet: true });
       return;
     }
     st.executedWarmups.push(key);
@@ -120,11 +124,11 @@ export class WarmupScheduler {
       const reply = await getProvider(ev.agent).warmup(WARMUP_PROMPT);
       this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'ok', detail: hm(ev.at) });
       this.state.save();
-      await this.notify(`✅ ${label} 已按计划预热（${hm(ev.at)}）。\n模型回复：「${reply || '(空)'}」`);
+      await this.notify(`✅ ${label} 已按计划预热（${hm(ev.at)}）。\n模型回复：「${reply || '(空)'}」`, { respectQuiet: true });
     } catch (e) {
       this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'fail', detail: (e as Error).message.slice(0, 80) });
       this.state.save();
-      await this.notify(`❌ ${label} 预热失败（${hm(ev.at)}）：${(e as Error).message}`);
+      await this.notify(`❌ ${label} 预热失败（${hm(ev.at)}）：${(e as Error).message}`, { respectQuiet: true });
     }
   }
 
@@ -146,13 +150,56 @@ export class WarmupScheduler {
     }, delayMs);
   }
 
-  private async notify(text: string): Promise<void> {
+  private async notify(text: string, opts: { respectQuiet?: boolean } = {}): Promise<void> {
     if (!this.ownerId) return;
+    if (opts.respectQuiet && isQuiet(new Date())) {
+      const dueAt = nextNonQuietTime(new Date());
+      const queue = this.state.get().pendingQuietMessages ?? (this.state.get().pendingQuietMessages = []);
+      queue.push({ text, dueAt: dueAt.toISOString(), kind: 'warmup' });
+      this.state.save();
+      this.scheduleQuietFlush(new Date());
+      console.log(`[scheduler] quiet message queued dueAt=${dueAt.toISOString()}`);
+      return;
+    }
     try {
       await this.channel.send(this.ownerId, { text });
     } catch {
       // 回执失败不致命
     }
+  }
+
+  private scheduleQuietFlush(now: Date): void {
+    if (this.quietFlushTimer) clearTimeout(this.quietFlushTimer);
+    const queue = this.state.get().pendingQuietMessages ?? [];
+    if (queue.length === 0) return;
+    const dueAt = queue
+      .map((m) => new Date(m.dueAt).getTime())
+      .filter((t) => !Number.isNaN(t))
+      .sort((a, b) => a - b)[0] ?? nextNonQuietTime(now).getTime();
+    const delay = Math.max(0, dueAt - now.getTime());
+    this.quietFlushTimer = setTimeout(() => void this.flushQuietMessages(), delay);
+  }
+
+  private async flushQuietMessages(): Promise<void> {
+    if (!this.ownerId) return;
+    if (isQuiet(new Date())) {
+      this.scheduleQuietFlush(new Date());
+      return;
+    }
+    const queue = this.state.get().pendingQuietMessages ?? [];
+    while (queue.length) {
+      const head = queue[0]!;
+      const dueAt = new Date(head.dueAt).getTime();
+      if (!Number.isNaN(dueAt) && dueAt > Date.now()) break;
+      try {
+        await this.channel.send(this.ownerId, { text: head.text });
+      } catch {
+        break;
+      }
+      queue.shift();
+      this.state.save();
+    }
+    this.scheduleQuietFlush(new Date());
   }
 }
 
@@ -168,4 +215,16 @@ function hm(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function isQuiet(now: Date): boolean {
+  const h = now.getHours();
+  return h >= 23 || h < 8;
+}
+
+function nextNonQuietTime(now: Date): Date {
+  const d = new Date(now);
+  if (d.getHours() >= 23) d.setDate(d.getDate() + 1);
+  d.setHours(8, 0, 0, 0);
+  return d;
 }

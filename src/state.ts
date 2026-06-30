@@ -18,6 +18,26 @@ export interface UsageSnapshot {
   capturedAt: string; // ISO
 }
 
+export type QuotaWindowName = 'fiveHour' | 'sevenDay' | 'monthly';
+
+export interface WindowSnapshot {
+  utilization: number;
+  resetAt: string | null;
+  capturedAt: string;
+}
+
+export interface PendingNotification {
+  provider: string;
+  windowKey: string;
+  window?: QuotaWindowName;
+}
+
+export interface PendingQuietMessage {
+  text: string;
+  dueAt: string;
+  kind?: 'warmup';
+}
+
 /** 上次采用计划的设置参数（不含日期），供"复用上次"用；不随计划过期清除。 */
 export interface LastPlanRequest {
   timeMode: string;
@@ -31,6 +51,7 @@ export interface DailyEvent {
   ts: string; // ISO
   type: 'warmup' | 'recovery';
   agent?: string;
+  window?: QuotaWindowName;
   result?: 'ok' | 'fail' | 'skip';
   detail?: string;
 }
@@ -53,7 +74,9 @@ export interface State {
   proposedPlanId: string | null;
   pendingRecovery: unknown;
   // 安静时段/计划期内检测到的恢复提醒先入此队列，待可打扰时统一补发（不丢）。
-  pendingNotifications: Array<{ provider: string; windowKey: string }>;
+  pendingNotifications: PendingNotification[];
+  // 安静时段内产生的系统主动文字回执（如定时预热结果），待 8 点后补发。
+  pendingQuietMessages: PendingQuietMessage[];
   lastWarmedWindows: Record<string, string>;
   lastRecoveryNotifiedWindows: Record<string, string>;
   // 每个 provider 上次"真正发出"恢复卡的时刻（ISO）。冷却兜底用：
@@ -61,6 +84,7 @@ export interface State {
   lastRecoverySentAt: Record<string, string>;
   lastBedtimePromptDate: string | null;
   providerSnapshots: Record<string, { utilization: number; resetAt: string | null }>;
+  providerWindowSnapshots: Record<string, Partial<Record<QuotaWindowName, WindowSnapshot>>>;
   // 上次成功读到的各家档位（monthly-only=免费档 Codex / has-5h=付费档/CC）。
   // 跨进程持久化：免费档一旦认出，后续只读感知就不再触发会烧月额度的 codex exec 刷新。
   providerTiers: Record<string, ProviderTier>;
@@ -80,11 +104,13 @@ function defaultState(): State {
     proposedPlanId: null,
     pendingRecovery: null,
     pendingNotifications: [],
+    pendingQuietMessages: [],
     lastWarmedWindows: {},
     lastRecoveryNotifiedWindows: {},
     lastRecoverySentAt: {},
     lastBedtimePromptDate: null,
     providerSnapshots: {},
+    providerWindowSnapshots: {},
     providerTiers: {},
     executedWarmups: [],
     lastPlanRequest: null,

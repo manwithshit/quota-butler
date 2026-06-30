@@ -157,6 +157,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
       st.pendingRecovery = {
         provider: String(payload['provider'] ?? ''),
         windowKey: String(payload['window_key'] ?? ''),
+        window: String(payload['window'] ?? 'fiveHour'),
         dueAt: new Date(Date.now() + minutes * 60000).toISOString(),
       };
       ctx.state.save();

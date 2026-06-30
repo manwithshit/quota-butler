@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WarmupScheduler } from '../src/scheduler.js';
@@ -11,7 +11,17 @@ function tmpState(): StateStore {
 
 const fakeChannel = {} as unknown as LarkChannel;
 
+function fakeChannelWithSends(): { channel: LarkChannel; sends: unknown[] } {
+  const sends: unknown[] = [];
+  const channel = { send: vi.fn(async (_id: string, msg: unknown) => void sends.push(msg)) } as unknown as LarkChannel;
+  return { channel, sends };
+}
+
 describe('WarmupScheduler.arm', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('skips past and already-executed nodes, arms only future ones', () => {
     const state = tmpState();
     const sch = new WarmupScheduler(fakeChannel, 'ou_x', state);
@@ -49,6 +59,44 @@ describe('WarmupScheduler.arm', () => {
 
     expect(result).toEqual({ armed: 1, skipped: 0 });
     expect(sch.pending).toBe(1);
+    sch.cancelAll();
+  });
+
+  it('queues scheduled warmup receipts during quiet hours and flushes them after 8am', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 6, 30));
+    const state = tmpState();
+    const { channel, sends } = fakeChannelWithSends();
+    const sch = new WarmupScheduler(channel, 'ou_x', state);
+
+    await (sch as unknown as { notify: (text: string, opts?: { respectQuiet?: boolean }) => Promise<void> })
+      .notify('✅ Claude Code 已按计划预热（06:30）。', { respectQuiet: true });
+
+    expect(sends).toHaveLength(0);
+    expect(state.get().pendingQuietMessages).toMatchObject([
+      { text: '✅ Claude Code 已按计划预热（06:30）。', kind: 'warmup' },
+    ]);
+    expect(state.get().pendingQuietMessages[0]?.dueAt).toBe(new Date(2026, 5, 24, 8, 0).toISOString());
+
+    await vi.advanceTimersByTimeAsync(90 * 60_000);
+
+    expect(sends).toEqual([{ text: '✅ Claude Code 已按计划预热（06:30）。' }]);
+    expect(state.get().pendingQuietMessages).toHaveLength(0);
+    sch.cancelAll();
+  });
+
+  it('keeps explicit test/debug notifications immediate even during quiet hours', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 6, 30));
+    const state = tmpState();
+    const { channel, sends } = fakeChannelWithSends();
+    const sch = new WarmupScheduler(channel, 'ou_x', state);
+
+    await (sch as unknown as { notify: (text: string, opts?: { respectQuiet?: boolean }) => Promise<void> })
+      .notify('测试预热完成');
+
+    expect(sends).toEqual([{ text: '测试预热完成' }]);
+    expect(state.get().pendingQuietMessages).toHaveLength(0);
     sch.cancelAll();
   });
 });
