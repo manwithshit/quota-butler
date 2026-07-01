@@ -171,6 +171,35 @@ describe('Poller deferred notifications (P0)', () => {
     expect(state.get().pendingNotifications).toHaveLength(0); // 已出队，不会无限重试
   });
 
+  it('keeps a recovery queued when sending fails and does not mark it sent', async () => {
+    const state = tmpState();
+    const channel = {
+      send: vi.fn(async () => {
+        throw new Error('accessToken leaked in upstream message');
+      }),
+    } as unknown as LarkChannel;
+    const poller = new Poller(channel, 'ou_x', state);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 0));
+    state.get().pendingNotifications = [
+      { provider: 'codex', window: 'fiveHour', windowKey: 'codex:fiveHour:2026-06-24T11:00:00.000Z' },
+    ];
+
+    await expect((poller as unknown as { flushNotifications: () => Promise<void> }).flushNotifications())
+      .rejects.toThrow('accessToken leaked');
+
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    expect(state.get().pendingNotifications).toHaveLength(1);
+    expect(state.get().lastRecoverySentAt['codex:fiveHour']).toBeUndefined();
+    const logs = spy.mock.calls.map((args) => args.join(' ')).join('\n');
+    expect(logs).toContain('recovery-send provider=codex window=fiveHour');
+    expect(logs).toContain('sent=no');
+    expect(logs).not.toContain('accessToken');
+    expect(logs).toContain('[redacted-field]');
+    spy.mockRestore();
+  });
+
   it('schedules a reset-check from last-good snapshot when CC is currently unreadable', async () => {
     const state = tmpState();
     const { channel, sends } = fakeChannel();
