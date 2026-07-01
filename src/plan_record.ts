@@ -1,8 +1,8 @@
 // 计划记录（plan_id 摘要）+ 校验。移植自 Python plan_tasks.py 的 plan_record / validate。
 
 import { createHash } from 'node:crypto';
-import { SUPPORTED_AGENTS, type SchedulePlan } from './planner.js';
-import { requestToPayloadShape } from './schedule_flow.js';
+import { AGENT_LABELS, SUPPORTED_AGENTS, type SchedulePlan } from './planner.js';
+import { normalizeHHmm, requestToPayloadShape, validateWarmupTimes } from './schedule_flow.js';
 
 export interface PlanEventRecord {
   agent: string;
@@ -75,6 +75,54 @@ export function planRecord(plan: SchedulePlan): PlanRecord {
   return { plan_id: digest, status: 'proposed', ...core };
 }
 
+export function appendAgentToPlanRecord(
+  value: unknown,
+  agent: string,
+  firstWarmup: string,
+  secondWarmup: string,
+): PlanRecord {
+  const base = validatePlanRecord(value);
+  if (base.manual) throw new Error('手动预热计划暂不支持补充另一个模型');
+  if (!(SUPPORTED_AGENTS as readonly string[]).includes(agent)) throw new Error(`计划包含不支持的 Agent: ${agent}`);
+  if (base.agents.includes(agent)) throw new Error(`${AGENT_LABELS[agent] ?? agent} 已在计划中`);
+  const first = normalizeHHmm(firstWarmup);
+  const second = normalizeHHmm(secondWarmup);
+  validateWarmupTimes(first, second);
+  const workStart = parseDate(base.work_start);
+  const warmups = [setTime(workStart, first), setTime(workStart, second)].sort((a, b) => a.getTime() - b.getTime());
+  const existingEnd = parseDate(base.work_end);
+  const nextEnd = new Date(Math.max(existingEnd.getTime(), warmups[1]!.getTime() + 5 * 3600000));
+  const agents = [...base.agents, agent];
+  const events = [
+    ...base.events.map((e) => ({ ...e })),
+    { agent, kind: 'warmup', at: localIso(warmups[0]!), purpose: '补充第一个窗口' },
+    { agent, kind: 'warmup', at: localIso(warmups[1]!), purpose: '补充第二个窗口' },
+  ].sort((a, b) => String(a.at).localeCompare(String(b.at)) || String(a.agent).localeCompare(String(b.agent)));
+  const label = AGENT_LABELS[agent] ?? agent;
+  const core = {
+    plan_version: 3,
+    agents,
+    work_start: base.work_start,
+    work_end: localIso(nextEnd),
+    reason: `${base.reason}；已补充 ${label} 预热。`,
+    events,
+    request: {
+      ...base.request,
+      supplemental_agent: agent,
+      supplemental_first_warmup: first,
+      supplemental_second_warmup: second,
+    },
+  };
+  const digest = createHash('sha256').update(stableStringify(core)).digest('hex').slice(0, 16);
+  return {
+    plan_id: digest,
+    status: base.status,
+    adopted_at: base.adopted_at,
+    tasks: base.tasks,
+    ...core,
+  };
+}
+
 export function validatePlanRecord(value: unknown): PlanRecord {
   if (!value || typeof value !== 'object') throw new Error('计划 payload 缺失');
   const record = value as Record<string, unknown>;
@@ -109,6 +157,11 @@ function parseDate(v: unknown): Date {
   const d = new Date(String(v));
   if (Number.isNaN(d.getTime())) throw new Error(`非法计划时间: ${String(v)}`);
   return d;
+}
+
+function setTime(base: Date, hhmm: string): Date {
+  const [hour, minute] = hhmm.split(':').map(Number) as [number, number];
+  return new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour, minute, 0, 0);
 }
 
 function stableStringify(obj: unknown): string {

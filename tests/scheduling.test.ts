@@ -212,14 +212,22 @@ describe('current plans and immediate warmup UX', () => {
 
   it('current-plan card renders today and tomorrow together', () => {
     const card = buildCurrentPlansCard({
-      '2026-06-23': { status: 'active', plan_id: 'today', work_start: '2026-06-23T09:00:00', work_end: '2026-06-23T16:31:00', agents: ['codex'], events: [] },
-      '2026-06-24': { status: 'active', plan_id: 'tomorrow', work_start: '2026-06-24T10:00:00', work_end: '2026-06-24T17:31:00', agents: ['cc'], events: [] },
+      '2026-06-23': {
+        status: 'active', plan_id: 'today', work_start: '2026-06-23T09:00:00', work_end: '2026-06-23T16:31:00', agents: ['codex'],
+        events: [{ agent: 'codex', kind: 'warmup', at: '2026-06-23T06:30:00', purpose: '准备第一个窗口' }],
+      },
+      '2026-06-24': {
+        status: 'active', plan_id: 'tomorrow', work_start: '2026-06-24T10:00:00', work_end: '2026-06-24T17:31:00', agents: ['cc'],
+        events: [{ agent: 'cc', kind: 'warmup', at: '2026-06-24T07:30:00', purpose: '准备第一个窗口' }],
+      },
     }, new Date('2026-06-23T13:00:00'));
     const text = JSON.stringify(card);
     expect(text).toContain('今日计划');
     expect(text).toContain('明日计划');
-    expect(text).toContain('09:00–16:31');
-    expect(text).toContain('10:00–17:31');
+    expect(text).toContain('预热：06:30 Codex');
+    expect(text).toContain('预热：07:30 Claude Code');
+    expect(text).not.toContain('09:00–16:31');
+    expect(text).not.toContain('10:00–17:31');
   });
 
   it('cancels a tomorrow plan whenever the current-plan card offers that cancel button', async () => {
@@ -239,7 +247,7 @@ describe('current plans and immediate warmup UX', () => {
 
     const card = buildCurrentPlansCard({ [targetDate]: state.get().plansByDate[targetDate]! }, new Date());
     const text = JSON.stringify(card);
-    expect(text).toContain('取消明日计划');
+    expect(text).toContain('取消整日计划');
     expect(text).toContain('未执行');
 
     const receipts: string[] = [];

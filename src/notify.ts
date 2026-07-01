@@ -163,7 +163,7 @@ export function buildBedtimeCard(
   lines.push('🌙 **明天有重度使用 AI 的计划吗？**');
   const target = tomorrowIso();
   const buttons = [
-    button('设置明日计划', 'primary', cb('schedule_intent', { intent: 'tomorrow', target_date: target })),
+    button('设置明天计划', 'primary', cb('schedule_intent', { intent: 'tomorrow', target_date: target })),
     button('明天不用', 'default', cb('tomorrow_skip')),
   ];
   return card('额度管家：明日计划', lines, buttons, buttons.length);
@@ -280,31 +280,27 @@ function activePlanLine(activePlan: unknown): string | null {
   if (!a || a['status'] !== 'active') return null;
   const startIso = String(a['work_start'] ?? '');
   const dateLabel = startIso.length >= 10 ? startIso.slice(5, 10) : '';
-  const start = hhmmOf(a['work_start']);
-  const end = hhmmOf(a['work_end']);
-  const endIso = String(a['work_end'] ?? '');
-  const crossDay = startIso.includes('T') && endIso.includes('T') && startIso.slice(0, 10) !== endIso.slice(0, 10);
-  const endText = crossDay ? `次日 ${end}` : end;
   const agents = (a['agents'] as string[] | undefined) ?? [];
   const labels = agents.map((x) => PROVIDER_LABEL[x] ?? x).join(' + ');
-  return `📅 **已采用计划** ${dateLabel} ${start}–${endText}（${labels}）`;
+  const next = nextWarmupText(a);
+  return `📅 **已采用计划** ${dateLabel}（${labels}${next ? ` · 下一次 ${next}` : ''}）`;
 }
 
 function localDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-export function buildCommandMenuCard(): Card {
+export function buildCommandMenuCard(plans: Record<string, Record<string, unknown>> = {}, now = new Date()): Card {
+  const lines = ['**当前安排**', ...menuPlanLines(plans, now), '', '**想做什么？**'];
   return card(
     '额度管家',
-    ['**想做什么？**'],
+    lines,
     [
       button('查询额度', 'primary', cb('query_status')),
-      button('查看当前计划', 'default', cb('view_schedule')),
+      button('设置明天计划', 'default', cb('schedule_intent', { intent: 'tomorrow' })),
       button('立即预热', 'default', cb('manual_warmup')),
-      button('设置明日计划', 'default', cb('schedule_intent', { intent: 'tomorrow' })),
     ],
-    2,
+    1,
   );
 }
 
@@ -397,20 +393,16 @@ export function buildActivePlanCard(record: Record<string, unknown>): Card {
       lines.push(`🔥 明天 **${hhmmOf(ev['at'])}** 预热 ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])}`);
     }
     lines.push('到点自动开窗，开完即结束。');
-    return card('额度管家：当前计划', lines, [button('取消计划', 'danger', cb('cancel_schedule'))]);
+    return card('额度管家：当前计划', lines, [button('取消整日计划', 'danger', cb('cancel_schedule'))]);
   }
   const start = hhmmOf(record['work_start']);
-  const end = hhmmOf(record['work_end']);
   const startIso = String(record['work_start'] ?? '');
-  const endIso = String(record['work_end'] ?? '');
   const planDateLabel = startIso.length >= 10 ? startIso.slice(5, 10) : ''; // MM-DD（今天/明天都对）
-  const crossDay = startIso.includes('T') && endIso.includes('T') && startIso.slice(0, 10) !== endIso.slice(0, 10);
-  const endText = crossDay ? `次日 ${end}` : end;
   const agents = (record['agents'] as string[] | undefined) ?? [];
   const labels = agents.map((a) => PROVIDER_LABEL[a] ?? a).join(' + ');
   const lines = [
     `**已采用计划${planDateLabel ? ` · ${planDateLabel}` : ''}**`,
-    `重度使用时段：**${start}–${endText}**`,
+    `使用开始：**${start}**`,
     `负责的 AI：**${labels || '未记录'}**`,
     '',
     '额度管家会到点自动帮你预热：',
@@ -421,7 +413,8 @@ export function buildActivePlanCard(record: Record<string, unknown>): Card {
     const purpose = ev['purpose'] ? ` · ${String(ev['purpose'])}` : '';
     lines.push(`🔥 **${hhmmOf(ev['at'])}** 预热 ${label}${purpose}`);
   }
-  return card('额度管家：当前计划', lines, [button('取消计划', 'danger', cb('cancel_schedule', { target_date: startIso.slice(0, 10) }))]);
+  if (agents.length > 1) lines.push('', '<font color="grey">取消会移除当天全部预热任务。</font>');
+  return card('额度管家：当前计划', lines, [button('取消整日计划', 'danger', cb('cancel_schedule', { target_date: startIso.slice(0, 10) }))]);
 }
 
 export function buildCurrentPlansCard(plans: Record<string, Record<string, unknown>>, now = new Date()): Card {
@@ -436,17 +429,78 @@ export function buildCurrentPlansCard(plans: Record<string, Record<string, unkno
       lines.push('暂无计划', '');
       continue;
     }
-    const start = hhmmOf(record['work_start']);
-    const end = hhmmOf(record['work_end']);
     const agents = ((record['agents'] as string[] | undefined) ?? []).map((a) => PROVIDER_LABEL[a] ?? a).join(' + ');
-    lines.push(`${start}–${end} · ${agents || '未记录'}`);
+    lines.push(`已安排：${agents || '未记录'}`);
+    const warmups = warmupSummary(record, true);
+    if (warmups.length) lines.push(`预热：${warmups.join('、')}`);
     for (const ev of (record['events'] as Array<Record<string, unknown>> | undefined) ?? []) {
       lines.push(`⌛ ${hhmmOf(ev['at'])} · ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])} · ${eventStatus(record, ev)}`);
     }
-    if (hasPendingWarmup(record)) buttons.push(button(`取消${label}`, 'danger', cb('cancel_schedule', { target_date: day })));
+    const supplement = label === '明日计划' ? supplementAgent(record) : null;
+    if (supplement && hasPendingWarmup(record)) {
+      buttons.push(button(`为 ${PROVIDER_LABEL[supplement]} 补充预热`, 'primary', cb('append_schedule_agent', {
+        target_date: day,
+        plan_id: String(record['plan_id'] ?? ''),
+        agent: supplement,
+      })));
+    }
+    if (hasPendingWarmup(record)) buttons.push(button('取消整日计划', 'danger', cb('cancel_schedule', { target_date: day })));
     lines.push('');
   }
   return card('额度管家：当前计划', lines, buttons, 1);
+}
+
+export function buildSupplementPlanCard(
+  record: Record<string, unknown>,
+  agent: string,
+  firstWarmup: string,
+  secondWarmup: string,
+): Card {
+  const label = PROVIDER_LABEL[agent] ?? agent;
+  const start = hhmmOf(record['work_start']);
+  const target = String(record['work_start'] ?? '').slice(0, 10);
+  return {
+    schema: '2.0',
+    config: { summary: { content: `额度管家：补充 ${label} 预热` } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content: [
+            `**为 ${label} 补充明天预热**`,
+            `沿用已有计划的使用开始时间 **${start}**，并把新模型预热时间轻微错开。`,
+            '你可以直接采用，也可以调整下面两个预热时间。',
+          ].join('\n'),
+        },
+        {
+          tag: 'form',
+          name: 'append_schedule_form',
+          elements: [
+            {
+              tag: 'picker_time', name: 'first_warmup',
+              placeholder: { tag: 'plain_text', content: '第一次预热' },
+              initial_time: firstWarmup, required: true,
+            },
+            {
+              tag: 'picker_time', name: 'second_warmup',
+              placeholder: { tag: 'plain_text', content: '第二次预热' },
+              initial_time: secondWarmup, required: true,
+            },
+            {
+              tag: 'button', name: 'submit_append_schedule',
+              text: { tag: 'plain_text', content: '采用补充计划' },
+              type: 'primary', width: 'fill', form_action_type: 'submit',
+              behaviors: [{ type: 'callback', value: cb('adopt_schedule_append', {
+                target_date: target,
+                previous_plan_id: String(record['plan_id'] ?? ''),
+                agent,
+              }) }],
+            },
+          ],
+        },
+      ],
+    },
+  };
 }
 
 // ---- 时间轴计划卡（核心）------------------------------------------------
@@ -479,6 +533,52 @@ export function buildScheduleCard(plan: SchedulePlan): Card {
     ],
   });
   return { schema: '2.0', config: { summary: { content: '额度管家：明日计划预览' } }, body: { elements } };
+}
+
+function menuPlanLines(plans: Record<string, Record<string, unknown>>, now: Date): string[] {
+  const today = localDate(now);
+  const tomorrow = localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  const lines: string[] = [];
+  const todayPlan = plans[today];
+  if (todayPlan) lines.push(...compactPlanLines('今天', todayPlan));
+  const tomorrowPlan = plans[tomorrow];
+  if (tomorrowPlan) lines.push(...compactPlanLines('明天', tomorrowPlan));
+  if (!tomorrowPlan) lines.push('明天暂无计划');
+  return lines;
+}
+
+function compactPlanLines(label: string, record: Record<string, unknown>): string[] {
+  const agents = ((record['agents'] as string[] | undefined) ?? []).map((a) => PROVIDER_LABEL[a] ?? a).join(' + ') || '未记录';
+  const warmups = warmupSummary(record, false);
+  return [`${label}：**${agents}**`, warmups.length ? `预热：${warmups.join('、')}` : '预热：暂无'];
+}
+
+function warmupSummary(record: Record<string, unknown>, includeAgent: boolean): string[] {
+  return ([...((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])] as Array<Record<string, unknown>>)
+    .filter((ev) => String(ev['kind'] ?? ev['type'] ?? 'warmup') === 'warmup')
+    .sort((a, b) => String(a['at']).localeCompare(String(b['at'])) || String(a['agent']).localeCompare(String(b['agent'])))
+    .map((ev) => {
+      const time = hhmmOf(ev['at']);
+      if (!includeAgent) return time;
+      return `${time} ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])}`;
+    });
+}
+
+function nextWarmupText(record: Record<string, unknown>): string | null {
+  const now = Date.now();
+  const next = ([...((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])] as Array<Record<string, unknown>>)
+    .filter((ev) => new Date(String(ev['at'] ?? '')).getTime() > now)
+    .sort((a, b) => String(a['at']).localeCompare(String(b['at'])))[0];
+  if (!next) return null;
+  return `${hhmmOf(next['at'])} ${PROVIDER_LABEL[String(next['agent'])] ?? String(next['agent'])}`;
+}
+
+function supplementAgent(record: Record<string, unknown>): string | null {
+  if (record['manual']) return null;
+  const agents = (record['agents'] as string[] | undefined) ?? [];
+  if (agents.length !== 1) return null;
+  const missing = ['cc', 'codex'].find((a) => !agents.includes(a));
+  return missing ?? null;
 }
 
 function scheduleTimelineElements(plan: SchedulePlan): Array<Record<string, unknown>> {

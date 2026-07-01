@@ -6,6 +6,9 @@ import {
   buildScheduleCard,
   buildBedtimeCard,
   buildTimeModeCard,
+  buildCommandMenuCard,
+  buildCurrentPlansCard,
+  buildSupplementPlanCard,
   type Card,
   type DailyReportContext,
 } from '../src/notify.js';
@@ -88,10 +91,10 @@ function planReq(partial: Partial<PlanRequest>): PlanRequest {
 describe('睡前/明日计划卡：已移除"复用上次"', () => {
   const last = { timeMode: 'point', workStart: '09:30', workEnd: '14:30', agentStrategy: 'auto' };
 
-  it('睡前卡只有「设置明日计划 / 明天不用」，无复用按钮', () => {
+  it('睡前卡只有「设置明天计划 / 明天不用」，无复用按钮', () => {
     const whole = JSON.stringify(buildBedtimeCard(undefined, last));
     expect(whole).not.toContain('复用上次');
-    expect(whole).toContain('设置明日计划');
+    expect(whole).toContain('设置明天计划');
     expect(whole).toContain('schedule_intent');
     expect(whole).toContain('tomorrow_skip');
   });
@@ -195,5 +198,63 @@ describe('buildScheduleCard', () => {
     expect(whole).toContain('second_warmup');
     expect(whole).not.toContain('更换 AI 工具');
     expect(whole).not.toContain('仅提醒');
+  });
+});
+
+describe('menu and current plan cards', () => {
+  it('menu has three actions and summarizes tomorrow preheat times', () => {
+    const card = buildCommandMenuCard({
+      '2099-06-24': {
+        status: 'active',
+        plan_id: 'tomorrow',
+        work_start: '2099-06-24T09:00:00',
+        work_end: '2099-06-24T16:31:00',
+        agents: ['cc'],
+        events: [
+          { agent: 'cc', kind: 'warmup', at: '2099-06-24T06:30:00', purpose: '准备第一个窗口' },
+          { agent: 'cc', kind: 'warmup', at: '2099-06-24T11:31:00', purpose: '恢复后准备第二个窗口' },
+        ],
+      },
+    }, new Date('2099-06-23T13:00:00'));
+    const whole = JSON.stringify(card);
+    expect(whole).toContain('查询额度');
+    expect(whole).toContain('设置明天计划');
+    expect(whole).toContain('立即预热');
+    expect(whole).not.toContain('查看当前计划');
+    expect(whole).toContain('预热：06:30、11:31');
+    expect(whole).not.toContain('09:00–16:31');
+  });
+
+  it('current plan card offers supplement for the missing model', () => {
+    const card = buildCurrentPlansCard({
+      '2099-06-24': {
+        status: 'active',
+        plan_id: 'tomorrow',
+        work_start: '2099-06-24T09:00:00',
+        work_end: '2099-06-24T16:31:00',
+        agents: ['cc'],
+        events: [
+          { agent: 'cc', kind: 'warmup', at: '2099-06-24T06:30:00', purpose: '准备第一个窗口' },
+          { agent: 'cc', kind: 'warmup', at: '2099-06-24T11:31:00', purpose: '恢复后准备第二个窗口' },
+        ],
+      },
+    }, new Date('2099-06-23T13:00:00'));
+    const whole = JSON.stringify(card);
+    expect(whole).toContain('为 Codex 补充预热');
+    expect(whole).toContain('取消整日计划');
+    expect(whole).not.toContain('09:00–16:31');
+  });
+
+  it('supplement card reuses existing start and defaults to offset warmups', () => {
+    const card = buildSupplementPlanCard({
+      plan_id: 'tomorrow',
+      work_start: '2026-06-24T09:00:00',
+      agents: ['cc'],
+    }, 'codex', '06:33', '11:34');
+    const whole = JSON.stringify(card);
+    expect(whole).toContain('为 Codex 补充明天预热');
+    expect(whole).toContain('06:33');
+    expect(whole).toContain('11:34');
+    expect(whole).toContain('采用补充计划');
   });
 });

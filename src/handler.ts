@@ -1,7 +1,7 @@
 // 卡片回调 / 文字命令路由。移植自 Python handler.py。
 // M2：完整规划交互闭环；adopt 仅标记 active（预热实际调度在 M3）。
 
-import { AgentState, detectAgents, isSchedulable, planningUsageForStatus, usableForPlanning, type PlanningUsageSnapshot } from './agent_status.js';
+import { AgentState, detectAgents, planningUsageForStatus, usableForPlanningAt, type AgentStatus, type PlanningUsageSnapshot } from './agent_status.js';
 import {
   buildActivePlanCard,
   buildAgentControlCard,
@@ -11,12 +11,13 @@ import {
   buildManualWarmupCard,
   buildScheduleCard,
   buildStatusCard,
+  buildSupplementPlanCard,
   buildTimeCard,
   buildTimeModeCard,
   type Card,
 } from './notify.js';
-import { buildPlan } from './planner.js';
-import { planRecord, validatePlanRecord } from './plan_record.js';
+import { AGENT_LABELS, buildPlan, SUPPORTED_AGENTS } from './planner.js';
+import { appendAgentToPlanRecord, planRecord, validatePlanRecord, type PlanRecord } from './plan_record.js';
 import { getProvider } from './providers/index.js';
 import {
   normalizeHHmm,
@@ -53,7 +54,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
 
   switch (action) {
     case 'menu':
-      return ctx.send(buildCommandMenuCard());
+      return ctx.send(buildCommandMenuCard(plansForDisplay(activePlanIndex(st), st.executedWarmups)));
 
     case 'query_status': {
       const statuses = await detectAgents();
@@ -101,6 +102,12 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
 
     case 'adopt_schedule':
       return adoptSchedule(payload, ctx);
+
+    case 'append_schedule_agent':
+      return proposeScheduleAppend(payload, ctx);
+
+    case 'adopt_schedule_append':
+      return adoptScheduleAppend(payload, ctx);
 
     case 'view_schedule': {
       const plans = activePlanIndex(st);
@@ -318,6 +325,75 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
   return ctx.receipt(`✅ 已采用计划，已布置 ${armed} 个预热任务${skipText}`);
 }
 
+async function proposeScheduleAppend(payload: Record<string, unknown>, ctx: HandlerCtx): Promise<void> {
+  const st = ctx.state.get();
+  const target = String(payload['target_date'] ?? '');
+  const agent = String(payload['agent'] ?? '');
+  const previousPlanId = String(payload['plan_id'] ?? '');
+  const plans = activePlanIndex(st);
+  const existing = plans[target];
+  if (!existing) return ctx.receipt('该计划已变化，请重新打开菜单');
+  if (String(existing['plan_id'] ?? '') !== previousPlanId) return ctx.receipt('该计划已变化，请重新打开菜单');
+  if (!isSupplementCandidate(existing, agent)) return ctx.receipt('该模型已经在计划中，或当前计划不能补充');
+  const block = await planningBlockReason(agent, existing, ctx);
+  if (block) return ctx.receipt(`${agentLabel(agent)} 明天不可规划，原因是：${block}`);
+  let first: string;
+  let second: string;
+  try {
+    [first, second] = recommendedAppendWarmups(existing);
+  } catch (e) {
+    return ctx.receipt(`该计划不能补充：${(e as Error).message}`);
+  }
+  return ctx.send(buildSupplementPlanCard(existing, agent, first, second));
+}
+
+async function adoptScheduleAppend(payload: Record<string, unknown>, ctx: HandlerCtx): Promise<void> {
+  const st = ctx.state.get();
+  const target = String(payload['target_date'] ?? '');
+  const agent = String(payload['agent'] ?? '');
+  const previousPlanId = String(payload['previous_plan_id'] ?? '');
+  const plans = activePlanIndex(st);
+  const existing = plans[target];
+  if (!existing) return ctx.receipt('该计划已变化，请重新打开菜单');
+  if (String(existing['plan_id'] ?? '') !== previousPlanId) return ctx.receipt('该计划已变化，请重新打开菜单');
+  if (!isSupplementCandidate(existing, agent)) return ctx.receipt('该模型已经在计划中，或当前计划不能补充');
+
+  const block = await planningBlockReason(agent, existing, ctx);
+  if (block) return ctx.receipt(`${agentLabel(agent)} 明天不可规划，原因是：${block}`);
+
+  let defaults: [string, string];
+  try {
+    defaults = recommendedAppendWarmups(existing);
+  } catch (e) {
+    return ctx.receipt(`该计划不能补充：${(e as Error).message}`);
+  }
+  const form = payload['form_value'] && typeof payload['form_value'] === 'object'
+    ? payload['form_value'] as Record<string, unknown>
+    : {};
+  const first = normalizeHHmm(form['first_warmup'] ?? defaults[0]);
+  const second = normalizeHHmm(form['second_warmup'] ?? defaults[1]);
+  let merged: PlanRecord;
+  try {
+    merged = appendAgentToPlanRecord(existing, agent, first, second);
+    if (!hasFutureWarmup(merged, new Date())) {
+      return ctx.receipt('❌ 该计划的预热时间已过，请重新打开菜单');
+    }
+  } catch (e) {
+    return ctx.receipt(`❌ 补充计划不可采用：${(e as Error).message}`);
+  }
+
+  merged.status = 'active';
+  merged.adopted_at = new Date().toISOString();
+  st.plansByDate = { ...plans, [target]: merged as unknown as Record<string, unknown> };
+  activePlanIndex(st);
+  ctx.state.save();
+  const result = ctx.scheduler?.armPlans(Object.values(st.plansByDate));
+  const armed = result?.armed ?? countFutureWarmups(merged, new Date());
+  const skipped = result?.skipped ?? Math.max(0, merged.events.length - armed);
+  const skipText = skipped > 0 ? `，跳过 ${skipped} 个过期/已执行任务` : '';
+  return ctx.receipt(`✅ 已补充 ${agentLabel(agent)} 预热，已重新布置 ${armed} 个预热任务${skipText}`);
+}
+
 async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promise<void> {
   const provider = String(payload['provider'] ?? '');
   if (provider !== 'cc' && provider !== 'codex') return ctx.receipt('预热工具无效');
@@ -341,6 +417,70 @@ async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promis
 
 function requestFromPayload(payload: Record<string, unknown>, availableCount: number): PlanRequest {
   return parsePlanRequest((payload['request'] as Record<string, unknown>) ?? {}, availableCount);
+}
+
+function isSupplementCandidate(record: Record<string, unknown>, agent: string): boolean {
+  if (record['manual']) return false;
+  if (!(SUPPORTED_AGENTS as readonly string[]).includes(agent)) return false;
+  const agents = (record['agents'] as string[] | undefined) ?? [];
+  return agents.length === 1 && !agents.includes(agent);
+}
+
+async function planningBlockReason(agent: string, record: Record<string, unknown>, ctx: HandlerCtx): Promise<string | null> {
+  const planningAt = new Date(String(record['work_start']));
+  const statuses = await detectAgents([agent]);
+  const status = statuses[agent];
+  if (status?.usage) ctx.state.recordUsageSnapshot(agent, status.usage);
+  ctx.state.save();
+  const usage = status ? planningUsageForStatus(status, ctx.state.get().usageSnapshots[agent], planningAt) : null;
+  if (usage) return null;
+  return unavailableReason(status, ctx.state.get().usageSnapshots[agent], planningAt);
+}
+
+function unavailableReason(
+  status: AgentStatus | undefined,
+  snapshot: PlanningUsageSnapshot | undefined,
+  planningAt: Date,
+): string {
+  if (!status) return '未检测到模型状态';
+  if (status.state === AgentState.NOT_INSTALLED) return '本机未检测到 CLI';
+  if (status.state === AgentState.NEEDS_LOGIN) return '需要重新登录';
+  if (status.state === AgentState.CONNECTED && status.usage) return usageBlockReason(status.usage, planningAt);
+  if (status.state === AgentState.TOKEN_STALE || status.state === AgentState.UNAVAILABLE) {
+    if (!snapshot) return '暂时无法读取额度，且没有 24 小时内可用快照';
+    return '暂时无法读取额度，最近快照也不满足明天规划条件';
+  }
+  return status.detail || '暂时不可用';
+}
+
+function usageBlockReason(usage: Usage, planningAt: Date): string {
+  if (!usage.fiveHour) return '没有 5 小时窗口，不能参与预热计划';
+  const weekly = usage.sevenDay;
+  if (weekly && !usableForPlanningAt(usage, planningAt)) {
+    if (!weekly.resetsAt) return '周额度不足，且未读到刷新时间';
+    return weekly.resetsAt.getTime() > planningAt.getTime()
+      ? '周额度不足，且刷新时间晚于计划开始时间'
+      : '周额度不足';
+  }
+  return '当前额度窗口不满足明天规划条件';
+}
+
+function recommendedAppendWarmups(record: Record<string, unknown>): [string, string] {
+  const events = ([...((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])] as Array<Record<string, unknown>>)
+    .filter((ev) => String(ev['kind'] ?? ev['type'] ?? 'warmup') === 'warmup')
+    .sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
+  if (events.length < 2) throw new Error('当前计划缺少两次预热时间');
+  return [offsetHHmm(hhmmOf(events[0]!['at']), 3), offsetHHmm(hhmmOf(events[1]!['at']), 3)];
+}
+
+function offsetHHmm(hhmm: string, minutes: number): string {
+  const [hour, minute] = normalizeHHmm(hhmm).split(':').map(Number) as [number, number];
+  const total = (hour * 60 + minute + minutes) % (24 * 60);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function agentLabel(agent: string): string {
+  return AGENT_LABELS[agent] ?? agent;
 }
 
 /** 当前是否有生效计划（自动或手动）；有则返回记录，供"先取消再设置"的闭环用。 */
