@@ -221,7 +221,9 @@ describe('menu and current plan cards', () => {
     expect(whole).toContain('设置明天计划');
     expect(whole).toContain('立即预热');
     expect(whole).not.toContain('查看当前计划');
-    expect(whole).toContain('预热：06:30、11:31');
+    expect(whole).toContain('| 时间 | 模型 |');
+    expect(whole).toContain('| 06:30 | Claude Code |');
+    expect(whole).toContain('| 11:31 | Claude Code |');
     expect(whole).not.toContain('09:00–16:31');
   });
 
@@ -240,8 +242,10 @@ describe('menu and current plan cards', () => {
       },
     }, new Date('2099-06-23T13:00:00'));
     const whole = JSON.stringify(card);
-    expect(whole).toContain('为 Codex 补充预热');
+    expect(whole).toContain('也安排 Codex 预热');
     expect(whole).toContain('取消整日计划');
+    expect(whole).toContain('| 时间 | 模型 | 状态 |');
+    expect(whole).toContain('| 06:30 | Claude Code | 未执行 |');
     expect(whole).not.toContain('09:00–16:31');
   });
 
@@ -252,7 +256,9 @@ describe('menu and current plan cards', () => {
       agents: ['cc'],
     }, 'codex', '06:33', '11:34');
     const whole = JSON.stringify(card);
-    expect(whole).toContain('为 Codex 补充明天预热');
+    expect(whole).toContain('为 Codex 安排明天预热');
+    expect(whole).toContain('明天计划会变成 **Claude Code + Codex**');
+    expect(whole).toContain('| 时间 | 模型 | 说明 |');
     expect(whole).toContain('06:33');
     expect(whole).toContain('11:34');
     expect(whole).toContain('采用补充计划');

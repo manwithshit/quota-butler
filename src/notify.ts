@@ -430,15 +430,10 @@ export function buildCurrentPlansCard(plans: Record<string, Record<string, unkno
       continue;
     }
     const agents = ((record['agents'] as string[] | undefined) ?? []).map((a) => PROVIDER_LABEL[a] ?? a).join(' + ');
-    lines.push(`已安排：${agents || '未记录'}`);
-    const warmups = warmupSummary(record, true);
-    if (warmups.length) lines.push(`预热：${warmups.join('、')}`);
-    for (const ev of (record['events'] as Array<Record<string, unknown>> | undefined) ?? []) {
-      lines.push(`⌛ ${hhmmOf(ev['at'])} · ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])} · ${eventStatus(record, ev)}`);
-    }
+    lines.push(`已安排：${agents || '未记录'}`, ...warmupTable(record, true));
     const supplement = label === '明日计划' ? supplementAgent(record) : null;
     if (supplement && hasPendingWarmup(record)) {
-      buttons.push(button(`为 ${PROVIDER_LABEL[supplement]} 补充预热`, 'primary', cb('append_schedule_agent', {
+      buttons.push(button(`也安排 ${PROVIDER_LABEL[supplement]} 预热`, 'primary', cb('append_schedule_agent', {
         target_date: day,
         plan_id: String(record['plan_id'] ?? ''),
         agent: supplement,
@@ -459,16 +454,26 @@ export function buildSupplementPlanCard(
   const label = PROVIDER_LABEL[agent] ?? agent;
   const start = hhmmOf(record['work_start']);
   const target = String(record['work_start'] ?? '').slice(0, 10);
+  const existing = ((record['agents'] as string[] | undefined) ?? []).map((a) => PROVIDER_LABEL[a] ?? a);
+  const mergedLabels = [...existing, label].join(' + ');
   return {
     schema: '2.0',
-    config: { summary: { content: `额度管家：补充 ${label} 预热` } },
+    config: { summary: { content: `额度管家：也安排 ${label}` } },
     body: {
       elements: [
         {
           tag: 'markdown',
           content: [
-            `**为 ${label} 补充明天预热**`,
-            `沿用已有计划的使用开始时间 **${start}**，并把新模型预热时间轻微错开。`,
+            `**为 ${label} 安排明天预热**`,
+            `沿用已有计划的使用开始时间：**${start}**。`,
+            `采用后，明天计划会变成 **${mergedLabels || label}**。`,
+            '取消整日计划会取消明天全部预热。',
+            '',
+            '| 时间 | 模型 | 说明 |',
+            '|---|---|---|',
+            `| ${firstWarmup} | ${label} | 第一次预热 |`,
+            `| ${secondWarmup} | ${label} | 第二次预热 |`,
+            '',
             '你可以直接采用，也可以调整下面两个预热时间。',
           ].join('\n'),
         },
@@ -540,28 +545,36 @@ function menuPlanLines(plans: Record<string, Record<string, unknown>>, now: Date
   const tomorrow = localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
   const lines: string[] = [];
   const todayPlan = plans[today];
-  if (todayPlan) lines.push(...compactPlanLines('今天', todayPlan));
+  if (todayPlan) lines.push(...compactPlanLines('今天计划', todayPlan));
   const tomorrowPlan = plans[tomorrow];
-  if (tomorrowPlan) lines.push(...compactPlanLines('明天', tomorrowPlan));
+  if (tomorrowPlan) lines.push(...compactPlanLines('明天计划', tomorrowPlan));
   if (!tomorrowPlan) lines.push('明天暂无计划');
   return lines;
 }
 
 function compactPlanLines(label: string, record: Record<string, unknown>): string[] {
-  const agents = ((record['agents'] as string[] | undefined) ?? []).map((a) => PROVIDER_LABEL[a] ?? a).join(' + ') || '未记录';
-  const warmups = warmupSummary(record, false);
-  return [`${label}：**${agents}**`, warmups.length ? `预热：${warmups.join('、')}` : '预热：暂无'];
+  const rows = warmupTable(record, false);
+  return [`**${label}**`, ...rows];
 }
 
-function warmupSummary(record: Record<string, unknown>, includeAgent: boolean): string[] {
+function warmupEvents(record: Record<string, unknown>): Array<Record<string, unknown>> {
   return ([...((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])] as Array<Record<string, unknown>>)
     .filter((ev) => String(ev['kind'] ?? ev['type'] ?? 'warmup') === 'warmup')
-    .sort((a, b) => String(a['at']).localeCompare(String(b['at'])) || String(a['agent']).localeCompare(String(b['agent'])))
-    .map((ev) => {
-      const time = hhmmOf(ev['at']);
-      if (!includeAgent) return time;
-      return `${time} ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])}`;
-    });
+    .sort((a, b) => String(a['at']).localeCompare(String(b['at'])) || String(a['agent']).localeCompare(String(b['agent'])));
+}
+
+function warmupTable(record: Record<string, unknown>, includeStatus: boolean): string[] {
+  const events = warmupEvents(record);
+  if (!events.length) return ['暂无预热节点'];
+  const lines = includeStatus
+    ? ['| 时间 | 模型 | 状态 |', '|---|---|---|']
+    : ['| 时间 | 模型 |', '|---|---|'];
+  for (const ev of events) {
+    const label = PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent']);
+    if (includeStatus) lines.push(`| ${hhmmOf(ev['at'])} | ${label} | ${eventStatus(record, ev)} |`);
+    else lines.push(`| ${hhmmOf(ev['at'])} | ${label} |`);
+  }
+  return lines;
 }
 
 function nextWarmupText(record: Record<string, unknown>): string | null {

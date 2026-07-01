@@ -330,6 +330,7 @@ async function proposeScheduleAppend(payload: Record<string, unknown>, ctx: Hand
   const target = String(payload['target_date'] ?? '');
   const agent = String(payload['agent'] ?? '');
   const previousPlanId = String(payload['plan_id'] ?? '');
+  if (target !== tomorrowIso()) return ctx.receipt('这张计划卡已过期，请重新打开菜单');
   const plans = activePlanIndex(st);
   const existing = plans[target];
   if (!existing) return ctx.receipt('该计划已变化，请重新打开菜单');
@@ -352,6 +353,7 @@ async function adoptScheduleAppend(payload: Record<string, unknown>, ctx: Handle
   const target = String(payload['target_date'] ?? '');
   const agent = String(payload['agent'] ?? '');
   const previousPlanId = String(payload['previous_plan_id'] ?? '');
+  if (target !== tomorrowIso()) return ctx.receipt('这张计划卡已过期，请重新打开菜单');
   const plans = activePlanIndex(st);
   const existing = plans[target];
   if (!existing) return ctx.receipt('该计划已变化，请重新打开菜单');

@@ -74,9 +74,28 @@ describe('supplement another model into tomorrow plan', () => {
 
     expect(receipts).toEqual([]);
     const whole = JSON.stringify(cards[0]);
-    expect(whole).toContain('为 Codex 补充明天预热');
+    expect(whole).toContain('为 Codex 安排明天预热');
     expect(whole).toContain('06:33');
     expect(whole).toContain('11:34');
+  });
+
+  it('rejects a stale supplement card whose target is no longer click-time tomorrow', async () => {
+    const { state } = stateWithTomorrowPlan();
+    const cards: unknown[] = [];
+    const receipts: string[] = [];
+
+    await handleAction(
+      { action: 'append_schedule_agent', target_date: '2026-06-22', plan_id: 'base-plan', agent: 'codex' },
+      {
+        state,
+        send: async (card) => { cards.push(card); },
+        receipt: async (message) => { receipts.push(message); },
+      },
+    );
+
+    expect(cards).toEqual([]);
+    expect(receipts).toEqual(['这张计划卡已过期，请重新打开菜单']);
+    expect(mockDetect).not.toHaveBeenCalled();
   });
 
   it('merges the supplement into the same date plan and re-arms future warmups', async () => {

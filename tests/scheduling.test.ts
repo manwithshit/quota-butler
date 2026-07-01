@@ -224,8 +224,9 @@ describe('current plans and immediate warmup UX', () => {
     const text = JSON.stringify(card);
     expect(text).toContain('今日计划');
     expect(text).toContain('明日计划');
-    expect(text).toContain('预热：06:30 Codex');
-    expect(text).toContain('预热：07:30 Claude Code');
+    expect(text).toContain('| 时间 | 模型 | 状态 |');
+    expect(text).toContain('| 06:30 | Codex | 已过期 |');
+    expect(text).toContain('| 07:30 | Claude Code | 已过期 |');
     expect(text).not.toContain('09:00–16:31');
     expect(text).not.toContain('10:00–17:31');
   });
