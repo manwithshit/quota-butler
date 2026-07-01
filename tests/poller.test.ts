@@ -29,6 +29,18 @@ function ccStatus(util5: number, resetsAt: Date): Record<string, AgentStatus> {
   return { cc: { provider: 'cc', state: AgentState.CONNECTED, usage } };
 }
 
+function statusFor(provider: string, usage: Usage): Record<string, AgentStatus> {
+  return { [provider]: { provider, state: AgentState.CONNECTED, usage } };
+}
+
+function windowSnap(utilization: number, resetAt: Date): { utilization: number; resetAt: string; capturedAt: string } {
+  return {
+    utilization,
+    resetAt: resetAt.toISOString(),
+    capturedAt: new Date(resetAt.getTime() - 3600000).toISOString(),
+  };
+}
+
 function fakeChannel(): { channel: LarkChannel; sends: unknown[] } {
   const sends: unknown[] = [];
   const channel = { send: vi.fn(async (_id: string, msg: unknown) => void sends.push(msg)) } as unknown as LarkChannel;
@@ -159,6 +171,35 @@ describe('Poller deferred notifications (P0)', () => {
     expect(state.get().pendingNotifications).toHaveLength(0); // 已出队，不会无限重试
   });
 
+  it('keeps a recovery queued when sending fails and does not mark it sent', async () => {
+    const state = tmpState();
+    const channel = {
+      send: vi.fn(async () => {
+        throw new Error('accessToken leaked in upstream message');
+      }),
+    } as unknown as LarkChannel;
+    const poller = new Poller(channel, 'ou_x', state);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 0));
+    state.get().pendingNotifications = [
+      { provider: 'codex', window: 'fiveHour', windowKey: 'codex:fiveHour:2026-06-24T11:00:00.000Z' },
+    ];
+
+    await expect((poller as unknown as { flushNotifications: () => Promise<void> }).flushNotifications())
+      .rejects.toThrow('accessToken leaked');
+
+    expect(channel.send).toHaveBeenCalledTimes(1);
+    expect(state.get().pendingNotifications).toHaveLength(1);
+    expect(state.get().lastRecoverySentAt['codex:fiveHour']).toBeUndefined();
+    const logs = spy.mock.calls.map((args) => args.join(' ')).join('\n');
+    expect(logs).toContain('recovery-send provider=codex window=fiveHour');
+    expect(logs).toContain('sent=no');
+    expect(logs).not.toContain('accessToken');
+    expect(logs).toContain('[redacted-field]');
+    spy.mockRestore();
+  });
+
   it('schedules a reset-check from last-good snapshot when CC is currently unreadable', async () => {
     const state = tmpState();
     const { channel, sends } = fakeChannel();
@@ -189,5 +230,187 @@ describe('Poller deferred notifications (P0)', () => {
     expect(sends).toHaveLength(1);
 
     poller.stop();
+  });
+
+  it('emits weekly recovery instead of a duplicate five-hour recovery when both reset together', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 12, 5, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerWindowSnapshots = {
+      cc: {
+        fiveHour: windowSnap(90, reset),
+        sevenDay: windowSnap(95, reset),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 10, 0));
+    mockDetect.mockResolvedValue(statusFor('cc', {
+      provider: 'cc',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 17, 5, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 0, resetsAt: new Date(2026, 6, 1, 12, 5, 0), windowSeconds: 604800 },
+    }));
+
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(1);
+    expect(JSON.stringify(sends[0])).toContain('周额度已刷新');
+    expect(state.get().lastRecoveryNotifiedWindows['cc:sevenDay']).toBe('cc:sevenDay:2026-06-24T04:05:00.000Z');
+    expect(state.get().lastRecoveryNotifiedWindows['cc:fiveHour']).toBeUndefined();
+  });
+
+  it('keeps a plain five-hour recovery when weekly quota did not reset', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 12, 5, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerWindowSnapshots = {
+      cc: {
+        fiveHour: windowSnap(90, reset),
+        sevenDay: windowSnap(10, new Date(2026, 5, 30, 12, 5, 0)),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 10, 0));
+    mockDetect.mockResolvedValue(statusFor('cc', {
+      provider: 'cc',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 17, 5, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 10, resetsAt: new Date(2026, 5, 30, 12, 5, 0), windowSeconds: 604800 },
+    }));
+
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(1);
+    expect(JSON.stringify(sends[0])).toContain('5 小时额度已恢复');
+    expect(state.get().lastRecoveryNotifiedWindows['cc:fiveHour']).toBe('cc:fiveHour:2026-06-24T04:05:00.000Z');
+  });
+
+  it('detects paid Codex weekly recovery when its five-hour reset triggers the check', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 12, 5, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerWindowSnapshots = {
+      codex: {
+        fiveHour: windowSnap(90, reset),
+        sevenDay: windowSnap(80, reset),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 10, 0));
+    mockDetect.mockResolvedValue(statusFor('codex', {
+      provider: 'codex',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 17, 5, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 2, resetsAt: new Date(2026, 6, 1, 12, 5, 0), windowSeconds: 604800 },
+    }));
+
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(1);
+    expect(JSON.stringify(sends[0])).toContain('Codex 周额度已刷新');
+  });
+
+  it('does not send monthly-only Codex recovery reminders', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 12, 5, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerWindowSnapshots = {
+      codex: {
+        monthly: windowSnap(92, reset),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 10, 0));
+    mockDetect.mockResolvedValue(statusFor('codex', {
+      provider: 'codex',
+      fiveHour: null,
+      monthly: { utilization: 0, resetsAt: new Date(2026, 6, 24, 12, 5, 0), windowSeconds: 2592000 },
+    }));
+
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(0);
+    expect(state.get().pendingNotifications).toHaveLength(0);
+  });
+
+  it('queues weekly recovery during quiet hours and flushes it later', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 1, 30, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerWindowSnapshots = {
+      cc: {
+        fiveHour: windowSnap(95, reset),
+        sevenDay: windowSnap(100, reset),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 2, 0, 0));
+    mockDetect.mockResolvedValue(statusFor('cc', {
+      provider: 'cc',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 6, 30, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 0, resetsAt: new Date(2026, 6, 1, 1, 30, 0), windowSeconds: 604800 },
+    }));
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(0);
+    expect(state.get().pendingNotifications).toMatchObject([{ provider: 'cc', window: 'sevenDay' }]);
+
+    vi.setSystemTime(new Date(2026, 5, 24, 9, 0, 0));
+    mockDetect.mockResolvedValue(statusFor('cc', {
+      provider: 'cc',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 6, 30, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 0, resetsAt: new Date(2026, 6, 1, 1, 30, 0), windowSeconds: 604800 },
+    }));
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(1);
+    expect(state.get().pendingNotifications).toHaveLength(0);
+  });
+
+  it('uses per-window cooldown so one recovery window does not suppress another', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 0));
+    state.get().pendingNotifications = [
+      { provider: 'cc', window: 'fiveHour', windowKey: 'cc:fiveHour:2026-06-24T10:00:00.000Z' },
+      { provider: 'cc', window: 'sevenDay', windowKey: 'cc:sevenDay:2026-06-24T10:00:00.000Z' },
+    ];
+    state.get().lastRecoverySentAt = { 'cc:fiveHour': new Date(2026, 5, 24, 10, 50).toISOString() };
+
+    await (poller as unknown as { flushNotifications: () => Promise<void> }).flushNotifications();
+
+    expect(sends).toHaveLength(1);
+    expect(JSON.stringify(sends[0])).toContain('周额度已刷新');
+    expect(state.get().pendingNotifications).toHaveLength(0);
+  });
+
+  it('logs provider state and recovery details without token fields', async () => {
+    const state = tmpState();
+    const { channel } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().providerSnapshots = {
+      cc: { utilization: 90, resetAt: new Date(2026, 5, 24, 11, 0).toISOString() },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 11, 10));
+    mockDetect.mockResolvedValue(ccStatus(0, new Date(2026, 5, 24, 16, 0)));
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    const logs = spy.mock.calls.map((call) => call.join(' ')).join('\n');
+    spy.mockRestore();
+    expect(logs).toContain('provider=cc state=connected');
+    expect(logs).toContain('recovery provider=cc window=fiveHour');
+    expect(logs).not.toMatch(/accessToken|refreshToken|accountId/i);
   });
 });

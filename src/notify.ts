@@ -8,7 +8,7 @@ import {
   requestToPayloadShape,
   type PlanRequest,
 } from './schedule_flow.js';
-import type { DailyEvent, DayQuotaSnap, LastPlanRequest, UsageSnapshot } from './state.js';
+import type { DailyEvent, DayQuotaSnap, LastPlanRequest, QuotaWindowName, UsageSnapshot } from './state.js';
 
 export const PROVIDER_LABEL: Record<string, string> = AGENT_LABELS;
 
@@ -114,13 +114,29 @@ export function buildStatusCard(
 
 // ---- 恢复 / 睡前 / 菜单 --------------------------------------------------
 
-export function buildRecoveryCard(provider: string, windowKey: string): Card {
+export function buildRecoveryCard(provider: string, windowKey: string, window: QuotaWindowName = 'fiveHour'): Card {
   const label = PROVIDER_LABEL[provider] ?? provider;
-  return card(`${label} 已恢复`, [`⚡ **${label} 已恢复。接下来准备重点使用吗？**`], [
-    button('立即预热', 'primary', cb('warmup_now', { provider, window_key: windowKey })),
-    button('30 分钟后提醒', 'default', cb('recovery_snooze', { provider, window_key: windowKey, minutes: 30 })),
-    button('暂时不用', 'default', cb('recovery_skip', { provider, window_key: windowKey })),
-  ]);
+  const copy = recoveryCopy(label, window);
+  const buttons = [];
+  buttons.push(button('立即预热', 'primary', cb('warmup_now', { provider, window_key: windowKey })));
+  buttons.push(
+    button('30 分钟后提醒', 'default', cb('recovery_snooze', { provider, window_key: windowKey, window, minutes: 30 })),
+    button('暂时不用', 'default', cb('recovery_skip', { provider, window_key: windowKey, window })),
+  );
+  return card(copy.title, [`⚡ **${copy.body}**`], buttons);
+}
+
+function recoveryCopy(label: string, window: QuotaWindowName): { title: string; body: string } {
+  if (window === 'sevenDay') {
+    return {
+      title: `${label} 周额度已刷新`,
+      body: `${label} 周额度已刷新，可以重新安排重度任务。`,
+    };
+  }
+  return {
+    title: `${label} 5 小时额度已恢复`,
+    body: `${label} 5 小时额度已恢复，可以开始一段重点使用。`,
+  };
 }
 
 /** 日报上下文：晚卡上半段用。 */
@@ -201,8 +217,11 @@ function dailyReportLines(
   } else {
     lines.push('**今日预热**：无定时预热任务');
   }
-  const recos = todays.filter((e) => e.type === 'recovery').length;
-  if (recos) lines.push(`**今日恢复**：额度恢复 ${recos} 次`);
+  const recos = todays.filter((e) => e.type === 'recovery');
+  if (recos.length) {
+    const counts = countRecoveriesByWindow(recos);
+    lines.push(`**今日恢复**：${recoverySummary(counts)}`);
+  }
 
   // A3 计划状态
   const planLine = activePlanLine(ctx.activePlan);
@@ -210,6 +229,21 @@ function dailyReportLines(
 
   lines.push('');
   return lines;
+}
+
+function countRecoveriesByWindow(events: DailyEvent[]): Record<QuotaWindowName, number> {
+  return events.reduce<Record<QuotaWindowName, number>>((acc, event) => {
+    const window = event.window ?? 'fiveHour';
+    acc[window] += 1;
+    return acc;
+  }, { fiveHour: 0, sevenDay: 0, monthly: 0 });
+}
+
+function recoverySummary(counts: Record<QuotaWindowName, number>): string {
+  const parts: string[] = [];
+  if (counts.fiveHour) parts.push(`5h 恢复 ${counts.fiveHour} 次`);
+  if (counts.sevenDay) parts.push(`周额度恢复 ${counts.sevenDay} 次`);
+  return parts.join(' · ');
 }
 
 function consumptionLines(

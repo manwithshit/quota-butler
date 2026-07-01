@@ -4,10 +4,11 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { detectAgents, isSchedulable, type AgentStatus } from './agent_status.js';
 import { buildBedtimeCard, buildRecoveryCard, type Card } from './notify.js';
-import { usageTier } from './providers/index.js';
-import { planIsExpired, type StateStore } from './state.js';
+import { usageTier, type Usage, type WindowUsage } from './providers/index.js';
+import { planIsExpired, type QuotaWindowName, type StateStore, type WindowSnapshot } from './state.js';
 
 const RECOVERY_FRESHNESS_MS = 4 * 3600000; // 4h：限流/网络抖动导致重置后晚一点才读到，也仍能补推恢复卡
+const LONG_WINDOW_RECOVERY_FRESHNESS_MS = 24 * 3600000; // 周/月翻篇落在睡眠/安静时段时，给更长补推窗口
 // 重置点精准复查：在已知的 5h 窗口重置时刻 +90s 单独查一次，及时抓到回血、立刻发恢复卡，
 // 不靠 15 分钟盲轮询碰运气（借鉴 Usage4Claude 的 resetVerify 思路）。
 const RESET_CHECK_DELAY_MS = 90_000;
@@ -18,6 +19,12 @@ const WINDOW_MATCH_TOLERANCE_MS = 90_000;
 // 发送冷却兜底：同一 provider 的恢复卡在此窗口内最多发一张。即使去重 key 被击穿、
 // 或崩溃后队列重发，也不会再出现"短时间多张"。5h 窗口本就远长于此，不会误杀真新窗口。
 const RECOVERY_SEND_COOLDOWN_MS = 30 * 60_000;
+
+interface RecoveryItem {
+  provider: string;
+  window: QuotaWindowName;
+  windowKey: string;
+}
 
 export class Poller {
   private timer?: ReturnType<typeof setInterval>;
@@ -41,30 +48,34 @@ export class Poller {
     this.resetTimers.clear();
   }
 
-  /** 在每个 provider 已知的 5h 重置时刻 +90s 排一个一次性复查 tick（替换旧的）。
-   *  当前没读到的 provider（CC 令牌过期/限流 → 没有实时 usage）也用 last-good 快照里的
-   *  resetAt 照排：这样 CC 恢复可读时正好落在重置边界被抓到，而不是干等 15 分钟盲轮询。 */
+  /** 在每个 provider 的主窗口重置时刻 +90s 排一个一次性复查 tick（替换旧的）。
+   *  有 5h 的 provider 仍以 5h 为主触发器；无 5h 的 provider 不主动发恢复提醒。
+   *  当前没读到的 provider 也用 last-good 快照照排，避免限流/令牌过期时漏掉边界。 */
   private scheduleResetChecks(statuses: Record<string, AgentStatus>, now: Date): void {
     const st = this.state.get();
     const providers = new Set([
       ...Object.keys(statuses),
       ...Object.keys(st.usageSnapshots ?? {}),
+      ...Object.keys(st.providerWindowSnapshots ?? {}),
     ]);
     for (const provider of providers) {
-      const reset =
-        statuses[provider]?.usage?.fiveHour?.resetsAt ?? snapshotFiveHourReset(st, provider);
+      const target = resetCheckTarget(st, provider, statuses[provider]?.usage);
+      if (!target?.resetAt) continue;
+      const reset = target.resetAt;
       if (!reset) continue;
       const delay = reset.getTime() + RESET_CHECK_DELAY_MS - now.getTime();
       if (delay <= 0 || delay > RESET_SCHEDULE_HORIZON_MS) continue;
-      const existing = this.resetTimers.get(provider);
+      const timerKey = `${provider}:${target.window}`;
+      const existing = this.resetTimers.get(timerKey);
       if (existing) clearTimeout(existing);
       this.resetTimers.set(
-        provider,
+        timerKey,
         setTimeout(() => {
-          this.resetTimers.delete(provider);
+          this.resetTimers.delete(timerKey);
           void this.tick(); // 到点复查：读到回血→检测出翻篇→发恢复卡，并据新 resetsAt 重排
         }, delay),
       );
+      console.log(`[poller] reset-check provider=${provider} window=${target.window} at=${reset.toISOString()}`);
     }
   }
 
@@ -80,6 +91,7 @@ export class Poller {
       console.error('[poller] detect 失败：', e);
       return;
     }
+    logDetectedStatuses(statuses, st);
     // 过了结束时间的计划自动清除（否则一直挂 active）。
     if (planIsExpired(st.activePlan, now)) {
       st.activePlan = null;
@@ -91,11 +103,16 @@ export class Poller {
     if (detected.length) {
       this.markRecoveries(detected);
       this.enqueueNotifications(detected);
-      for (const [provider] of detected) this.state.appendEvent({ type: 'recovery', agent: provider });
+      for (const item of detected) {
+        this.state.appendEvent({ type: 'recovery', agent: item.provider, window: item.window });
+        console.log(`[poller] recovery provider=${item.provider} window=${item.window} windowKey=${item.windowKey} queued=yes`);
+      }
     }
     for (const [p, s] of Object.entries(statuses)) {
       if (!s.usage) continue;
       this.state.recordUsageSnapshot(p, s.usage);
+      recordProviderWindowSnapshots(st, p, s.usage, now);
+      logWindowSnapshots(p, s.usage);
       // 记住档位：下一拍（含进程重启后）就能在感知时认出免费档，跳过烧额度的刷新。
       st.providerTiers = { ...st.providerTiers, [p]: usageTier(s.usage) };
     }
@@ -149,48 +166,53 @@ export class Poller {
     this.scheduleResetChecks(statuses, now);
   }
 
-  private newlyRecovered(statuses: Record<string, AgentStatus>, now: Date): Array<[string, string]> {
+  private newlyRecovered(statuses: Record<string, AgentStatus>, now: Date): RecoveryItem[] {
     const st = this.state.get();
-    const previous = st.providerSnapshots ?? {};
     const notified = st.lastRecoveryNotifiedWindows ?? {};
-    const results: Array<[string, string]> = [];
+    const results: RecoveryItem[] = [];
     // 注意：计划工作区间内不再"直接丢弃检测"，改为照常检测，由 tick 决定是否延后发送（见 flushNotifications）。
     for (const [provider, s] of Object.entries(statuses)) {
       if (!isSchedulable(s) || !s.usage) continue;
-      let before = previous[provider];
-      if (!before?.resetAt) {
-        // providerSnapshots 缺失（限流期被清 / 重启）→ 回退到持久化 last-good
-        // （usageSnapshots，只在成功时写、从不抹）作为对比基准，避免漏报这次翻篇。
-        const ug = st.usageSnapshots?.[provider];
-        if (ug?.fiveHourResetAt) before = { utilization: ug.fiveHourUtil ?? 100, resetAt: ug.fiveHourResetAt };
+      const usage = s.usage;
+      const longWindow = usage.sevenDay ? 'sevenDay' : null;
+      const longBefore = longWindow ? snapshotForWindow(st, provider, longWindow) : null;
+      const longCurrent = longWindow ? windowUsageByName(usage, longWindow) : null;
+      if (longWindow && longBefore && longCurrent && hasRecoveredWindow(longBefore, longCurrent, now, longWindow)) {
+        const resetAt = parseSnapshotReset(longBefore.resetAt)!;
+        const windowKey = recoveryWindowKey(provider, longWindow, resetAt);
+        if (!sameNotifiedWindow(notified[notifiedKey(provider, longWindow)], provider, longWindow, resetAt)) {
+          results.push({ provider, window: longWindow, windowKey });
+        }
+        continue;
       }
-      if (!before?.resetAt) continue;
-      const resetAt = new Date(before.resetAt);
-      if (Number.isNaN(resetAt.getTime())) continue;
-      const age = now.getTime() - resetAt.getTime();
-      if (age < 0 || age > RECOVERY_FRESHNESS_MS) continue;
-      if (!s.usage.fiveHour || s.usage.fiveHour.utilization > 5) continue;
-      const windowKey = `${provider}:${resetAt.toISOString()}`;
+      const before = snapshotForWindow(st, provider, 'fiveHour');
+      const current = usage.fiveHour;
+      if (!before || !current || !hasRecoveredWindow(before, current, now, 'fiveHour')) continue;
+      const resetAt = parseSnapshotReset(before.resetAt)!;
+      const windowKey = recoveryWindowKey(provider, 'fiveHour', resetAt);
       // 容差去重：已通知窗口的 resetAt 与当前在 90s 内即视为同一窗口，避免后端时间漂移重发。
-      if (sameNotifiedWindow(notified[provider], provider, resetAt)) continue;
-      results.push([provider, windowKey]);
+      if (
+        sameNotifiedWindow(notified[notifiedKey(provider, 'fiveHour')], provider, 'fiveHour', resetAt) ||
+        sameLegacyNotifiedWindow(notified[provider], provider, resetAt)
+      ) continue;
+      results.push({ provider, window: 'fiveHour', windowKey });
     }
     return results;
   }
 
-  private markRecoveries(recovered: Array<[string, string]>): void {
+  private markRecoveries(recovered: RecoveryItem[]): void {
     const notified = { ...(this.state.get().lastRecoveryNotifiedWindows ?? {}) };
-    for (const [provider, windowKey] of recovered) notified[provider] = windowKey;
+    for (const item of recovered) notified[notifiedKey(item.provider, item.window)] = item.windowKey;
     this.state.get().lastRecoveryNotifiedWindows = notified;
   }
 
   /** 把待发提醒入持久队列（按 provider:windowKey 去重）。 */
-  private enqueueNotifications(items: Array<[string, string]>): void {
+  private enqueueNotifications(items: RecoveryItem[]): void {
     const st = this.state.get();
     const queue = st.pendingNotifications ?? (st.pendingNotifications = []);
-    for (const [provider, windowKey] of items) {
-      if (!queue.some((q) => q.provider === provider && q.windowKey === windowKey)) {
-        queue.push({ provider, windowKey });
+    for (const item of items) {
+      if (!queue.some((q) => q.provider === item.provider && q.windowKey === item.windowKey)) {
+        queue.push({ provider: item.provider, windowKey: item.windowKey, window: item.window });
       }
     }
   }
@@ -203,25 +225,38 @@ export class Poller {
     while (queue.length) {
       const head = queue[0]!;
       // 冷却兜底：同一 provider 距上次实际发卡不足 30min，视为重复，丢弃不发（不刷屏）。
-      const last = sentAt[head.provider] ? new Date(sentAt[head.provider]!).getTime() : 0;
+      const window = head.window ?? windowFromKey(head.windowKey);
+      const sentKey = notifiedKey(head.provider, window);
+      const legacyLast = window === 'fiveHour' ? sentAt[head.provider] : undefined;
+      const lastText = sentAt[sentKey] ?? legacyLast;
+      const last = lastText ? new Date(lastText).getTime() : 0;
       if (last && Date.now() - last < RECOVERY_SEND_COOLDOWN_MS) {
         queue.shift();
         this.state.save();
         continue;
       }
-      await this.sendCard(buildRecoveryCard(head.provider, head.windowKey));
-      sentAt[head.provider] = new Date().toISOString();
+      try {
+        await this.sendCard(buildRecoveryCard(head.provider, head.windowKey, window));
+      } catch (e) {
+        console.error(
+          `[poller] recovery-send provider=${head.provider} window=${window} windowKey=${head.windowKey} sent=no error=${safeErrorSummary(e)}`,
+        );
+        throw e;
+      }
+      sentAt[sentKey] = new Date().toISOString();
+      console.log(`[poller] recovery-send provider=${head.provider} window=${window} windowKey=${head.windowKey} sent=yes`);
       queue.shift();
       this.state.save();
     }
   }
 
-  private dueSnoozed(now: Date): [string, string] | null {
+  private dueSnoozed(now: Date): RecoveryItem | null {
     const pending = this.state.get().pendingRecovery as
-      | { provider?: string; windowKey?: string; dueAt?: string }
+      | { provider?: string; windowKey?: string; window?: QuotaWindowName; dueAt?: string }
       | null;
     const provider = pending?.provider ?? '';
     const windowKey = pending?.windowKey ?? '';
+    const window = pending?.window ?? windowFromKey(windowKey);
     const dueText = pending?.dueAt ?? '';
     if (!provider || !windowKey || !dueText) return null;
     const dueAt = new Date(dueText);
@@ -231,7 +266,7 @@ export class Poller {
     }
     if (now.getTime() < dueAt.getTime()) return null;
     // 到期即返回；是否能立刻发由 tick 的"可打扰"判断决定。安静时段到期不再清空、不再丢。
-    return [provider, windowKey];
+    return { provider, windowKey, window };
   }
 
   private activePlanCovers(now: Date): boolean {
@@ -249,8 +284,24 @@ export class Poller {
   }
 }
 
-/** 已通知窗口 key（`provider:ISO`）与当前 resetAt 是否同一窗口（±90s 容差）。 */
-function sameNotifiedWindow(notifiedKey: string | undefined, provider: string, resetAt: Date): boolean {
+/** 已通知窗口 key（`provider:window:ISO`）与当前 resetAt 是否同一窗口（±90s 容差）。 */
+function sameNotifiedWindow(
+  notifiedWindowKey: string | undefined,
+  provider: string,
+  window: QuotaWindowName,
+  resetAt: Date,
+): boolean {
+  if (!notifiedWindowKey) return false;
+  if (notifiedWindowKey === recoveryWindowKey(provider, window, resetAt)) return true;
+  const prefix = `${provider}:${window}:`;
+  const iso = notifiedWindowKey.startsWith(prefix) ? notifiedWindowKey.slice(prefix.length) : '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return false;
+  return Math.abs(t - resetAt.getTime()) <= WINDOW_MATCH_TOLERANCE_MS;
+}
+
+/** 旧版通知 key（`provider:ISO`）兼容：只用于 legacy fiveHour 队列。 */
+function sameLegacyNotifiedWindow(notifiedKey: string | undefined, provider: string, resetAt: Date): boolean {
   if (!notifiedKey) return false;
   if (notifiedKey === `${provider}:${resetAt.toISOString()}`) return true;
   const iso = notifiedKey.startsWith(`${provider}:`) ? notifiedKey.slice(provider.length + 1) : '';
@@ -259,12 +310,138 @@ function sameNotifiedWindow(notifiedKey: string | undefined, provider: string, r
   return Math.abs(t - resetAt.getTime()) <= WINDOW_MATCH_TOLERANCE_MS;
 }
 
-/** last-good 快照里该 provider 的 5h resetAt（当前读不到时用来照排重置点复查）。 */
-function snapshotFiveHourReset(state: ReturnType<StateStore['get']>, provider: string): Date | null {
-  const iso = state.usageSnapshots?.[provider]?.fiveHourResetAt;
-  if (!iso) return null;
-  const d = new Date(iso);
+function safeErrorSummary(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  return message
+    .replace(/access[_-]?token|refresh[_-]?token|account[_-]?id/gi, '[redacted-field]')
+    .slice(0, 200);
+}
+
+function recoveryWindowKey(provider: string, window: QuotaWindowName, resetAt: Date): string {
+  return `${provider}:${window}:${resetAt.toISOString()}`;
+}
+
+function notifiedKey(provider: string, window: QuotaWindowName): string {
+  return `${provider}:${window}`;
+}
+
+function windowFromKey(windowKey: string): QuotaWindowName {
+  const parts = windowKey.split(':');
+  const maybe = parts[1];
+  return maybe === 'sevenDay' || maybe === 'monthly' ? maybe : 'fiveHour';
+}
+
+function windowsOfUsage(provider: string, usage: Usage): Array<{ name: QuotaWindowName; usage: WindowUsage }> {
+  const windows: Array<{ name: QuotaWindowName; usage: WindowUsage }> = [];
+  if (usage.fiveHour) windows.push({ name: 'fiveHour', usage: usage.fiveHour });
+  if (usage.sevenDay) windows.push({ name: 'sevenDay', usage: usage.sevenDay });
+  return windows;
+}
+
+function windowUsageByName(usage: Usage, window: QuotaWindowName): WindowUsage | null {
+  if (window === 'fiveHour') return usage.fiveHour ?? null;
+  if (window === 'sevenDay') return usage.sevenDay ?? null;
+  return usage.monthly ?? null;
+}
+
+function recordProviderWindowSnapshots(
+  state: ReturnType<StateStore['get']>,
+  provider: string,
+  usage: Usage,
+  now: Date,
+): void {
+  const all = state.providerWindowSnapshots ?? (state.providerWindowSnapshots = {});
+  const providerSnaps = { ...(all[provider] ?? {}) };
+  for (const item of windowsOfUsage(provider, usage)) {
+    providerSnaps[item.name] = {
+      utilization: item.usage.utilization,
+      resetAt: item.usage.resetsAt ? item.usage.resetsAt.toISOString() : null,
+      capturedAt: now.toISOString(),
+    };
+  }
+  all[provider] = providerSnaps;
+}
+
+function snapshotForWindow(
+  state: ReturnType<StateStore['get']>,
+  provider: string,
+  window: QuotaWindowName,
+): WindowSnapshot | null {
+  const direct = state.providerWindowSnapshots?.[provider]?.[window];
+  if (direct) return direct;
+  const usageSnap = state.usageSnapshots?.[provider];
+  if (window === 'fiveHour') {
+    const legacy = state.providerSnapshots?.[provider];
+    if (legacy) {
+      return {
+        utilization: legacy.utilization,
+        resetAt: legacy.resetAt,
+        capturedAt: usageSnap?.capturedAt ?? new Date(0).toISOString(),
+      };
+    }
+    if (usageSnap?.fiveHourResetAt) {
+      return {
+        utilization: usageSnap.fiveHourUtil ?? 100,
+        resetAt: usageSnap.fiveHourResetAt,
+        capturedAt: usageSnap.capturedAt,
+      };
+    }
+  }
+  if (window === 'sevenDay' && usageSnap?.sevenDayResetAt) {
+    return {
+      utilization: usageSnap.sevenDayUtil ?? 100,
+      resetAt: usageSnap.sevenDayResetAt,
+      capturedAt: usageSnap.capturedAt,
+    };
+  }
+  return null;
+}
+
+function hasRecoveredWindow(
+  before: WindowSnapshot,
+  current: WindowUsage,
+  now: Date,
+  window: QuotaWindowName,
+): boolean {
+  const resetAt = parseSnapshotReset(before.resetAt);
+  if (!resetAt) return false;
+  const freshness = window === 'fiveHour' ? RECOVERY_FRESHNESS_MS : LONG_WINDOW_RECOVERY_FRESHNESS_MS;
+  const age = now.getTime() - resetAt.getTime();
+  if (age < 0 || age > freshness) return false;
+  if (window === 'fiveHour') return before.utilization > 5 && current.utilization <= 5;
+  const drop = before.utilization - current.utilization;
+  const resetMoved = current.resetsAt ? Math.abs(current.resetsAt.getTime() - resetAt.getTime()) > WINDOW_MATCH_TOLERANCE_MS : false;
+  return before.utilization > current.utilization && (current.utilization <= 5 || drop >= 50 || resetMoved);
+}
+
+function parseSnapshotReset(value: string | null): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function resetCheckTarget(
+  state: ReturnType<StateStore['get']>,
+  provider: string,
+  usage: Usage | undefined,
+): { window: QuotaWindowName; resetAt: Date | null } | null {
+  const five = usage?.fiveHour?.resetsAt ?? parseSnapshotReset(snapshotForWindow(state, provider, 'fiveHour')?.resetAt ?? null);
+  if (five) return { window: 'fiveHour', resetAt: five };
+  return null;
+}
+
+function logDetectedStatuses(statuses: Record<string, AgentStatus>, state: ReturnType<StateStore['get']>): void {
+  for (const [provider, status] of Object.entries(statuses)) {
+    const hasSnapshot = Boolean(state.usageSnapshots?.[provider]);
+    console.log(`[poller] provider=${provider} state=${status.state} usage=${status.usage ? 'yes' : 'no'} snapshot=${hasSnapshot ? 'yes' : 'no'}`);
+  }
+}
+
+function logWindowSnapshots(provider: string, usage: Usage): void {
+  for (const item of windowsOfUsage(provider, usage)) {
+    const resetAt = item.usage.resetsAt ? item.usage.resetsAt.toISOString() : 'null';
+    console.log(`[poller] window provider=${provider} window=${item.name} util=${item.usage.utilization} resetAt=${resetAt} snapshot=write`);
+  }
 }
 
 function isQuiet(now: Date): boolean {

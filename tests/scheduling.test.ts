@@ -76,6 +76,29 @@ describe('usableForPlanning', () => {
     }
   });
 
+  it('uses a recent token-stale snapshot for tomorrow planning', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-27T14:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'cc', state: AgentState.TOKEN_STALE, detail: 'oauth/usage 返回 401' },
+        {
+          fiveHourUtil: 0,
+          fiveHourResetAt: '2026-06-27T16:30:00.000Z',
+          sevenDayUtil: 20,
+          sevenDayResetAt: '2026-07-01T20:00:00.000Z',
+          capturedAt: '2026-06-27T12:00:00.000Z',
+        },
+        new Date('2026-06-28T10:30:00'),
+      );
+
+      expect(usage?.provider).toBe('cc');
+      expect(usage?.sevenDay?.utilization).toBe(20);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('treats legacy snapshots without weekly reset time as unknown instead of depleted', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-27T14:00:00'));
@@ -117,6 +140,42 @@ describe('usableForPlanning', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not use stale token-stale snapshots for planning', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-27T14:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'cc', state: AgentState.TOKEN_STALE, detail: 'oauth/usage 返回 401' },
+        {
+          fiveHourUtil: 0,
+          fiveHourResetAt: null,
+          sevenDayUtil: 20,
+          capturedAt: '2026-06-25T12:00:00.000Z',
+        },
+        new Date('2026-06-28T10:30:00'),
+      );
+
+      expect(usage).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not use needs-login snapshots for planning', () => {
+    const usage = planningUsageForStatus(
+      { provider: 'cc', state: AgentState.NEEDS_LOGIN, detail: '未登录' },
+      {
+        fiveHourUtil: 0,
+        fiveHourResetAt: null,
+        sevenDayUtil: 20,
+        capturedAt: new Date().toISOString(),
+      },
+      new Date('2026-06-28T10:30:00'),
+    );
+
+    expect(usage).toBeNull();
   });
 });
 

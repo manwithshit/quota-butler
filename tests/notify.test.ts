@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   usageBar,
   buildStatusCard,
+  buildRecoveryCard,
   buildScheduleCard,
   buildBedtimeCard,
   buildTimeModeCard,
@@ -125,7 +126,8 @@ describe('日报（晚卡上半段）', () => {
         { ts: tsToday(6), type: 'warmup', agent: 'cc', result: 'ok' },
         { ts: tsToday(11), type: 'warmup', agent: 'cc', result: 'ok' },
         { ts: tsToday(12), type: 'warmup', agent: 'cc', result: 'skip' },
-        { ts: tsToday(9), type: 'recovery', agent: 'cc' },
+        { ts: tsToday(9), type: 'recovery', agent: 'cc', window: 'fiveHour' },
+        { ts: tsToday(10), type: 'recovery', agent: 'cc', window: 'sevenDay' },
       ],
       activePlan: { status: 'active', work_start: '2026-06-23T10:00:00', work_end: '2026-06-23T18:00:00', agents: ['cc'] },
     };
@@ -135,7 +137,8 @@ describe('日报（晚卡上半段）', () => {
     expect(text).toContain('今天用掉 周额度 ≈10%'); // 30-20
     expect(text).toContain('✅ 2'); // 两次成功
     expect(text).toContain('⏭️ 1'); // 一次跳过
-    expect(text).toContain('额度恢复 1 次');
+    expect(text).toContain('5h 恢复 1 次');
+    expect(text).toContain('周额度恢复 1 次');
     expect(text).toContain('已采用计划');
     expect(text).toContain('🌙 **明天有重度使用 AI 的计划吗？**'); // 仍接到原询问
   });
@@ -147,6 +150,22 @@ describe('日报（晚卡上半段）', () => {
     const text = md(buildBedtimeCard(statuses, null, { now: new Date(2026, 5, 23, 22, 0) }));
     expect(text).toContain('今日小结');
     expect(text).toContain('无定时预热任务');
+  });
+});
+
+describe('buildRecoveryCard', () => {
+  it('renders distinct copy for five-hour and weekly recoveries', () => {
+    const five = JSON.stringify(buildRecoveryCard('cc', 'cc:fiveHour:2026-06-24T11:00:00.000Z', 'fiveHour'));
+    const weekly = JSON.stringify(buildRecoveryCard('cc', 'cc:sevenDay:2026-06-24T11:00:00.000Z', 'sevenDay'));
+
+    expect(five).toContain('5 小时额度已恢复');
+    expect(weekly).toContain('周额度已刷新');
+  });
+
+  it('shows immediate warmup for weekly recovery cards', () => {
+    const weekly = JSON.stringify(buildRecoveryCard('cc', 'cc:sevenDay:2026-06-24T11:00:00.000Z', 'sevenDay'));
+
+    expect(weekly).toContain('立即预热');
   });
 });
 
