@@ -235,8 +235,16 @@ export class Poller {
         this.state.save();
         continue;
       }
-      await this.sendCard(buildRecoveryCard(head.provider, head.windowKey, window));
+      try {
+        await this.sendCard(buildRecoveryCard(head.provider, head.windowKey, window));
+      } catch (e) {
+        console.error(
+          `[poller] recovery-send provider=${head.provider} window=${window} windowKey=${head.windowKey} sent=no error=${safeErrorSummary(e)}`,
+        );
+        throw e;
+      }
       sentAt[sentKey] = new Date().toISOString();
+      console.log(`[poller] recovery-send provider=${head.provider} window=${window} windowKey=${head.windowKey} sent=yes`);
       queue.shift();
       this.state.save();
     }
@@ -300,6 +308,13 @@ function sameLegacyNotifiedWindow(notifiedKey: string | undefined, provider: str
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return false;
   return Math.abs(t - resetAt.getTime()) <= WINDOW_MATCH_TOLERANCE_MS;
+}
+
+function safeErrorSummary(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  return message
+    .replace(/access[_-]?token|refresh[_-]?token|account[_-]?id/gi, '[redacted-field]')
+    .slice(0, 200);
 }
 
 function recoveryWindowKey(provider: string, window: QuotaWindowName, resetAt: Date): string {
