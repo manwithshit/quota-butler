@@ -96,6 +96,24 @@ Claude Code / Codex 登录文件
 
 敏感信息只保存在本机。飞书应用凭证、访问令牌、open_id、chat_id、本地状态文件、Claude Code / Codex 登录信息都不要提交到仓库。
 
+## 分支与部署约定
+
+项目采用稳定版和开发集成版分支分流，避免正在运行的机器被未验证改动直接覆盖。
+
+```text
+main       Release / 稳定版。默认给长期运行机器使用，只合入已验证改动。
+develop    开发集成版。用于 M1 等 dogfood 机器拉取最新改动并试跑。
+codex/*    功能分支。单项改动先在这里完成测试，再合入 develop。
+```
+
+建议流程：
+
+1. 功能开发在 `codex/...` 分支完成，并通过 `npm test`、`npm run typecheck`、`npm run build`。
+2. 合入 `develop` 后，在测试机器上重新拉取、构建并运行一天。
+3. 确认飞书收发、额度恢复、安静时段和计划/预热都正常后，再通过 PR 合入 `main`。
+
+部署时不要删除旧版本目录。先 `quota-butler stop` 停止当前守护，再在目标分支 checkout 内构建并 `npm link`，最后 `quota-butler start`。如需回滚，回到旧版本目录重新 `npm link` 并启动。
+
 ## 开发
 
 ```bash
