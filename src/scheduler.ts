@@ -4,6 +4,7 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { getProvider } from './providers/index.js';
 import { PROVIDER_LABEL } from './notify.js';
+import { markFiveHourWindowWarmed } from './recovery_window.js';
 import { activePlanIndex, planIsExpired, type StateStore } from './state.js';
 import { endWarmup, tryBeginWarmup } from './warmup_lock.js';
 
@@ -131,6 +132,7 @@ export class WarmupScheduler {
     this.state.save();
     try {
       const reply = await getProvider(ev.agent).warmup(WARMUP_PROMPT);
+      markFiveHourWindowWarmed(st, ev.agent, new Date());
       this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'ok', detail: hm(ev.at) });
       this.state.save();
       await this.notify(`✅ ${label} 已按计划预热（${hm(ev.at)}）。\n模型回复：「${reply || '(空)'}」`, { respectQuiet: true });

@@ -5,6 +5,13 @@ import type { LarkChannel } from '@larksuite/channel';
 import { detectAgents, isSchedulable, type AgentStatus } from './agent_status.js';
 import { buildBedtimeCard, buildRecoveryCard, type Card } from './notify.js';
 import { usageTier, type Usage, type WindowUsage } from './providers/index.js';
+import {
+  recoveryWindowKey,
+  sameLegacyRecoveryWindowKey,
+  sameRecoveryWindowKey,
+  warmedFiveHourWindowMatches,
+  WINDOW_MATCH_TOLERANCE_MS,
+} from './recovery_window.js';
 import { planIsExpired, type QuotaWindowName, type StateStore, type WindowSnapshot } from './state.js';
 
 const RECOVERY_FRESHNESS_MS = 4 * 3600000; // 4h：限流/网络抖动导致重置后晚一点才读到，也仍能补推恢复卡
@@ -13,9 +20,6 @@ const LONG_WINDOW_RECOVERY_FRESHNESS_MS = 24 * 3600000; // 周/月翻篇落在�
 // 不靠 15 分钟盲轮询碰运气（借鉴 Usage4Claude 的 resetVerify 思路）。
 const RESET_CHECK_DELAY_MS = 90_000;
 const RESET_SCHEDULE_HORIZON_MS = 6 * 3600000; // 只为 6h 内的重置点排，避免布太远的定时器
-// 同窗口容差：oauth/usage 后端每次现算 resets_at，秒级会漂移；精确等值会让同一窗口
-// 被当成"新窗口"重复发卡。借鉴 Python 老版 TOLERANCE_SECONDS=60，这里取 90s。
-const WINDOW_MATCH_TOLERANCE_MS = 90_000;
 // 发送冷却兜底：同一 provider 的恢复卡在此窗口内最多发一张。即使去重 key 被击穿、
 // 或崩溃后队列重发，也不会再出现"短时间多张"。5h 窗口本就远长于此，不会误杀真新窗口。
 const RECOVERY_SEND_COOLDOWN_MS = 30 * 60_000;
@@ -181,7 +185,7 @@ export class Poller {
       if (longWindow && longBefore && longCurrent && hasRecoveredWindow(longBefore, longCurrent, now, longWindow)) {
         const resetAt = parseSnapshotReset(longBefore.resetAt)!;
         const windowKey = recoveryWindowKey(provider, longWindow, resetAt);
-        if (!sameNotifiedWindow(notified[notifiedKey(provider, longWindow)], provider, longWindow, resetAt)) {
+        if (!sameRecoveryWindowKey(notified[notifiedKey(provider, longWindow)], provider, longWindow, resetAt)) {
           results.push({ provider, window: longWindow, windowKey });
         }
         continue;
@@ -193,8 +197,9 @@ export class Poller {
       const windowKey = recoveryWindowKey(provider, 'fiveHour', resetAt);
       // 容差去重：已通知窗口的 resetAt 与当前在 90s 内即视为同一窗口，避免后端时间漂移重发。
       if (
-        sameNotifiedWindow(notified[notifiedKey(provider, 'fiveHour')], provider, 'fiveHour', resetAt) ||
-        sameLegacyNotifiedWindow(notified[provider], provider, resetAt)
+        sameRecoveryWindowKey(notified[notifiedKey(provider, 'fiveHour')], provider, 'fiveHour', resetAt) ||
+        sameLegacyRecoveryWindowKey(notified[provider], provider, resetAt) ||
+        warmedFiveHourWindowMatches(st, provider, resetAt)
       ) continue;
       results.push({ provider, window: 'fiveHour', windowKey });
     }
@@ -285,41 +290,11 @@ export class Poller {
   }
 }
 
-/** 已通知窗口 key（`provider:window:ISO`）与当前 resetAt 是否同一窗口（±90s 容差）。 */
-function sameNotifiedWindow(
-  notifiedWindowKey: string | undefined,
-  provider: string,
-  window: QuotaWindowName,
-  resetAt: Date,
-): boolean {
-  if (!notifiedWindowKey) return false;
-  if (notifiedWindowKey === recoveryWindowKey(provider, window, resetAt)) return true;
-  const prefix = `${provider}:${window}:`;
-  const iso = notifiedWindowKey.startsWith(prefix) ? notifiedWindowKey.slice(prefix.length) : '';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return false;
-  return Math.abs(t - resetAt.getTime()) <= WINDOW_MATCH_TOLERANCE_MS;
-}
-
-/** 旧版通知 key（`provider:ISO`）兼容：只用于 legacy fiveHour 队列。 */
-function sameLegacyNotifiedWindow(notifiedKey: string | undefined, provider: string, resetAt: Date): boolean {
-  if (!notifiedKey) return false;
-  if (notifiedKey === `${provider}:${resetAt.toISOString()}`) return true;
-  const iso = notifiedKey.startsWith(`${provider}:`) ? notifiedKey.slice(provider.length + 1) : '';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return false;
-  return Math.abs(t - resetAt.getTime()) <= WINDOW_MATCH_TOLERANCE_MS;
-}
-
 function safeErrorSummary(e: unknown): string {
   const message = e instanceof Error ? e.message : String(e);
   return message
     .replace(/access[_-]?token|refresh[_-]?token|account[_-]?id/gi, '[redacted-field]')
     .slice(0, 200);
-}
-
-function recoveryWindowKey(provider: string, window: QuotaWindowName, resetAt: Date): string {
-  return `${provider}:${window}:${resetAt.toISOString()}`;
 }
 
 function notifiedKey(provider: string, window: QuotaWindowName): string {

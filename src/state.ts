@@ -1,7 +1,7 @@
 // 本地状态持久化（~/.quota-butler/state.json）。单进程内存态 + 落盘。
 // 移植自 Python state.py，并新增 usageSnapshots（last-good 快照，cc-switch 同款）。
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ProviderTier, Usage } from './providers/index.js';
@@ -231,6 +231,7 @@ function load(path: string): { state: State; warning: string | null } {
   }
   try {
     const raw = JSON.parse(text) as Partial<State>;
+    tightenMode(path);
     return { state: { ...defaultState(), ...raw }, warning: null };
   } catch {
     // 文件损坏（多半是写入中途断电/被杀）：备份原文件再重置，不静默吞掉。
@@ -249,5 +250,13 @@ function load(path: string): { state: State; warning: string | null } {
       state: defaultState(),
       warning: `⚠️ 本地状态文件 state.json 损坏，已备份到 ${backup} 并重置为空状态。已采用的计划和提醒去重记录丢失，请重新设置计划。`,
     };
+  }
+}
+
+function tightenMode(path: string): void {
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // 权限收紧失败不阻塞启动
   }
 }

@@ -156,6 +156,64 @@ describe('Poller deferred notifications (P0)', () => {
     expect(sends).toHaveLength(1); // 仍是 1 张，没重发
   });
 
+  it('does not send a five-hour recovery card for a window already handled by warmup', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 12, 5, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().lastWarmedWindows = {
+      codex: `codex:fiveHour:${new Date(reset.getTime() + 40_000).toISOString()}`,
+    };
+    state.get().providerWindowSnapshots = {
+      codex: {
+        fiveHour: windowSnap(90, reset),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 12, 10, 0));
+    mockDetect.mockResolvedValue(statusFor('codex', {
+      provider: 'codex',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 17, 5, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 10, resetsAt: new Date(2026, 5, 30, 12, 5, 0), windowSeconds: 604800 },
+    }));
+
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(0);
+    expect(state.get().pendingNotifications).toHaveLength(0);
+    expect(state.get().lastRecoveryNotifiedWindows['codex:fiveHour']).toBeUndefined();
+  });
+
+  it('still sends recovery for the next five-hour window after a warmed window', async () => {
+    const state = tmpState();
+    const { channel, sends } = fakeChannel();
+    const poller = new Poller(channel, 'ou_x', state);
+    const warmedReset = new Date(2026, 5, 24, 12, 5, 0);
+    const nextReset = new Date(2026, 5, 24, 17, 5, 0);
+    state.get().lastBedtimePromptDate = '2026-06-24';
+    state.get().lastWarmedWindows = {
+      codex: `codex:fiveHour:${warmedReset.toISOString()}`,
+    };
+    state.get().providerWindowSnapshots = {
+      codex: {
+        fiveHour: windowSnap(90, nextReset),
+      },
+    };
+
+    vi.setSystemTime(new Date(2026, 5, 24, 17, 10, 0));
+    mockDetect.mockResolvedValue(statusFor('codex', {
+      provider: 'codex',
+      fiveHour: { utilization: 0, resetsAt: new Date(2026, 5, 24, 22, 5, 0), windowSeconds: 18000 },
+      sevenDay: { utilization: 10, resetsAt: new Date(2026, 5, 30, 12, 5, 0), windowSeconds: 604800 },
+    }));
+
+    await (poller as unknown as { tick: () => Promise<void> }).tick();
+
+    expect(sends).toHaveLength(1);
+    expect(state.get().lastRecoveryNotifiedWindows['codex:fiveHour']).toBe(`codex:fiveHour:${nextReset.toISOString()}`);
+  });
+
   it('cooldown backstop drops a re-queued recovery card within 30min', async () => {
     const state = tmpState();
     const { channel, sends } = fakeChannel();

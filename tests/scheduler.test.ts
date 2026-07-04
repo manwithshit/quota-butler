@@ -1,9 +1,22 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { LarkChannel } from '@larksuite/channel';
+
+vi.mock('../src/providers/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/providers/index.js')>();
+  return {
+    ...actual,
+    getProvider: () => ({
+      name: 'codex',
+      readUsage: async () => ({ provider: 'codex', fiveHour: null }),
+      warmup: async () => '你好',
+    }),
+  };
+});
+
 import { WarmupScheduler } from '../src/scheduler.js';
 import { StateStore } from '../src/state.js';
-import type { LarkChannel } from '@larksuite/channel';
 
 function tmpState(): StateStore {
   return new StateStore(join(tmpdir(), `qb-test-${Date.now()}-${Math.random()}.json`));
@@ -97,6 +110,42 @@ describe('WarmupScheduler.arm', () => {
 
     expect(sends).toEqual([{ text: '测试预热完成' }]);
     expect(state.get().pendingQuietMessages).toHaveLength(0);
+    sch.cancelAll();
+  });
+
+  it('marks the current five-hour recovery window as warmed after scheduled warmup succeeds', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 5, 24, 10, 0));
+    const state = tmpState();
+    const { channel } = fakeChannelWithSends();
+    const sch = new WarmupScheduler(channel, 'ou_x', state);
+    const reset = new Date(2026, 5, 24, 9, 30);
+    const windowKey = `codex:fiveHour:${reset.toISOString()}`;
+    const at = new Date(2026, 5, 24, 10, 1).toISOString();
+    const plan = {
+      plan_id: 'p1',
+      status: 'active',
+      work_end: new Date(2026, 5, 24, 18, 0).toISOString(),
+      events: [{ agent: 'codex', kind: 'warmup', at, purpose: '' }],
+    };
+    state.get().plansByDate = { '2026-06-24': plan };
+    state.get().activePlan = plan;
+    state.get().providerWindowSnapshots = {
+      codex: {
+        fiveHour: {
+          utilization: 90,
+          resetAt: reset.toISOString(),
+          capturedAt: new Date(2026, 5, 24, 8, 0).toISOString(),
+        },
+      },
+    };
+    state.get().pendingNotifications = [{ provider: 'codex', window: 'fiveHour', windowKey }];
+
+    sch.arm(plan);
+    await vi.advanceTimersByTimeAsync(61_000);
+
+    expect(state.get().lastWarmedWindows.codex).toBe(windowKey);
+    expect(state.get().pendingNotifications).toHaveLength(0);
     sch.cancelAll();
   });
 });
