@@ -5,6 +5,7 @@ import type { LarkChannel } from '@larksuite/channel';
 import { getProvider } from './providers/index.js';
 import { PROVIDER_LABEL } from './notify.js';
 import { activePlanIndex, planIsExpired, type StateStore } from './state.js';
+import { endWarmup, tryBeginWarmup } from './warmup_lock.js';
 
 // 预热提示词：必须是一句"秒回、不触发任何工具"的 ping——否则像问"什么项目"会让
 // claude/codex 以 agent 身份去翻文件，慢甚至超时。回执仍带模型回复，照样能看出"真跑了"。
@@ -118,6 +119,14 @@ export class WarmupScheduler {
       await this.notify(`⏭️ 跳过 ${label} 的预热（${hm(ev.at)} 已过时，可能因睡眠/关机错过）。`, { respectQuiet: true });
       return;
     }
+    // 同 provider 已有一次预热在跑（手动/恢复卡触发的）：本节点等价已完成，按 skip 记录，不重复烧请求。
+    if (!tryBeginWarmup(ev.agent)) {
+      st.executedWarmups.push(key);
+      this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'skip', detail: `${hm(ev.at)} 另一次预热进行中` });
+      this.state.save();
+      await this.notify(`⏭️ 跳过 ${label} 的定时预热（${hm(ev.at)}）：另一次预热正在进行，窗口已在开启。`, { respectQuiet: true });
+      return;
+    }
     st.executedWarmups.push(key);
     this.state.save();
     try {
@@ -129,6 +138,8 @@ export class WarmupScheduler {
       this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'fail', detail: (e as Error).message.slice(0, 80) });
       this.state.save();
       await this.notify(`❌ ${label} 预热失败（${hm(ev.at)}）：${(e as Error).message}`, { respectQuiet: true });
+    } finally {
+      endWarmup(ev.agent);
     }
   }
 

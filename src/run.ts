@@ -32,6 +32,14 @@ export async function run(): Promise<void> {
 
     const state = new StateStore();
     const { channel, ownerId } = await connectChannel(cfg);
+    // state.json 损坏被重置的话，第一时间告诉 owner（计划/去重记录已丢，需重新设置）。
+    if (state.loadWarning && ownerId) {
+      try {
+        await channel.send(ownerId, { text: state.loadWarning });
+      } catch (e) {
+        console.error('[quota-butler] 状态重置警告发送失败：', e);
+      }
+    }
     const scheduler = new WarmupScheduler(channel, ownerId, state);
     scheduler.rearmFromState(); // 重启后按 active plan 重新布预热点
     const poller = new Poller(channel, ownerId, state);
