@@ -125,9 +125,10 @@ export class Poller {
       st.pendingRecovery = null;
     }
 
-    // 睡前卡放宽到 22:00–23:59 窗口 + 当日去重：避免恰好没有 tick 落在 22:xx（或 daemon 22 点后才起）而永久漏发。
+    // 睡前卡只在 22:00–22:59 发（当日去重）：23 点起是安静时段，主动打扰自相矛盾。
+    // 15 分钟轮询保证 22:xx 至少有 3 个 tick；daemon 23 点后才起的罕见情形宁可漏发也不深夜打扰。
     const hour = now.getHours();
-    const bedtimeDue = (hour === 22 || hour === 23) && st.lastBedtimePromptDate !== isoDate(now);
+    const bedtimeDue = hour === 22 && st.lastBedtimePromptDate !== isoDate(now);
     try {
       // 安静时段 / 计划工作区间内不打扰：队列里的提醒留到可打扰时统一补发（不丢）。
       if (!isQuiet(now) && !this.activePlanCovers(now)) {

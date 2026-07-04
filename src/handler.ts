@@ -13,6 +13,7 @@ import {
   buildStatusCard,
   buildTimeCard,
   buildTimeModeCard,
+  PROVIDER_LABEL,
   type Card,
 } from './notify.js';
 import { buildPlan } from './planner.js';
@@ -28,6 +29,7 @@ import {
 import { activePlanIndex, planDate, type StateStore } from './state.js';
 import type { Usage } from './providers/index.js';
 import { WARMUP_PROMPT, type WarmupScheduler } from './scheduler.js';
+import { endWarmup, tryBeginWarmup } from './warmup_lock.js';
 
 export interface HandlerCtx {
   state: StateStore;
@@ -326,11 +328,17 @@ async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promis
   if (windowKey && st.lastWarmedWindows[provider] === windowKey) {
     return ctx.receipt('这个窗口已经预热过了');
   }
+  // 手动预热卡的按钮不带 window_key，靠进程内互斥防双击/并发重复执行。
+  if (!tryBeginWarmup(provider)) {
+    return ctx.receipt(`${PROVIDER_LABEL[provider] ?? provider} 正在预热中，请等待回执，不要重复点击。`);
+  }
   let reply: string;
   try {
     reply = await getProvider(provider).warmup(WARMUP_PROMPT);
   } catch (e) {
     return ctx.receipt(`❌ ${provider} 预热失败：${(e as Error).message}`);
+  } finally {
+    endWarmup(provider);
   }
   if (windowKey) {
     st.lastWarmedWindows[provider] = windowKey;

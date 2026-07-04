@@ -375,7 +375,8 @@ export function buildAgentControlCard(request: PlanRequest, statuses: Record<str
       button('重新检测', 'primary', cb('redetect_agents', { request: requestToPayloadShape(request) })),
     ]);
   }
-  const buttons = ([['Claude Code', 'cc'], ['Codex', 'codex'], ['两个都用', 'both']] as const).map(
+  // 一个计划只编排一个工具（planner 对 both 直接报错），不提供"两个都用"入口。
+  const buttons = ([['Claude Code', 'cc'], ['Codex', 'codex']] as const).map(
     ([label, strategy]) => {
       const candidate: PlanRequest = { ...request, agentStrategy: strategy };
       return button(label, strategy === request.agentStrategy ? 'primary' : 'default', {
@@ -485,66 +486,30 @@ function scheduleTimelineElements(plan: SchedulePlan): Array<Record<string, unkn
   const md = (content: string) => ({ tag: 'markdown', content, text_align: 'left' });
   const ws = plan.workStart;
   const we = plan.workEnd;
-  const workHours = (we.getTime() - ws.getTime()) / 3600000;
   const first = plan.agents[0]!;
   const firstLabel = PROVIDER_LABEL[first]!;
   const fw = plan.events.filter((e) => e.agent === first).map((e) => e.at).sort((a, b) => a.getTime() - b.getTime());
   const prepStart = fw[0] ?? ws;
   const secondWarm = fw[1] ?? we;
   const windowCount = Math.max(1, fw.length);
-  const dual = false;
 
   const bar: Array<Record<string, unknown>> = [segColumn(1, 'grey-200', '预备')];
   const axis: Array<Record<string, unknown>> = [segColumn(1, null, `${hm(prepStart)}\n开始计时`)];
-
-  let headline: Record<string, unknown>;
-  let sub: Record<string, unknown>;
-  let metric: Record<string, unknown>;
-  let baseline: Record<string, unknown>;
   const phases: Array<Record<string, unknown>> = [];
 
-  if (dual) {
-    const relay = plan.agents[1]!;
-    const relayLabel = PROVIDER_LABEL[relay]!;
-    const rw = plan.events.filter((e) => e.agent === relay).map((e) => e.at).sort((a, b) => a.getTime() - b.getTime());
-    const relayAt = rw[rw.length - 1]!;
-    const prePin = rw.length > 1 ? rw[0]! : null;
-    const w1End = new Date(Math.min(Math.max(secondWarm.getTime(), ws.getTime()), relayAt.getTime()));
-    const w1h = (w1End.getTime() - ws.getTime()) / 3600000;
-    const w2h = (relayAt.getTime() - w1End.getTime()) / 3600000;
-    const relayH = (we.getTime() - relayAt.getTime()) / 3600000;
-    bar.push(segColumn(segWeight(w1h), 'blue-200', `${firstLabel} 窗口 1\n**100%**`));
-    bar.push(segColumn(segWeight(w2h), 'blue-200', `${firstLabel} 窗口 2\n**100%**`));
-    bar.push(segColumn(segWeight(relayH), 'wathet-200', `${relayLabel}\n接力`));
-    axis.push(segColumn(segWeight(w1h), null, `${hm(ws)}\n你开工`));
-    axis.push(segColumn(segWeight(w2h), null, `${hm(secondWarm)}\n续上额度`));
-    axis.push(segColumn(segWeight(relayH), null, `${hm(relayAt)}\n${relayLabel} 接力`));
-    headline = md(`**明天 ${hm(ws)}–${endLabel(ws, we)} 连续可用 · ${firstLabel} 为主，${relayLabel} 接力**`);
-    sub = md(`先用 ${firstLabel}；等它的额度用到交接点，${relayLabel} 自动接上，让你一整天连续用、不会中途被卡。`);
-    metric = md(`📊 **前 5 小时 ≈ 200% 额度**（${firstLabel} 两窗）　·　**全程 ${fmtHours(workHours)} 小时连续可用**`);
-    baseline = md(`<font color='grey'>不安排的话：同样时间最多撑住 1～2 个窗口，中途大概率被卡。</font>`);
-    phases.push(md(`✅ **开工前** · ${hm(prepStart)} 启动 ${firstLabel}，${hm(ws)} 打开直接用。`));
-    phases.push(md(`🔄 **工作中** · ${hm(secondWarm)} 自动续上第二档 ${firstLabel}。`));
-    if (prePin) {
-      phases.push(md(`➕ **接力延长** · ${relayLabel} 提前在 ${hm(prePin)} 备好窗口，${hm(relayAt)} 准点接上，一直用到 ${hm(we)}。`));
-    } else {
-      phases.push(md(`➕ **接力延长** · ${hm(relayAt)} 起 ${relayLabel} 接上，一直用到 ${hm(we)}。`));
-    }
-  } else {
-    const w1End = new Date(Math.min(Math.max(secondWarm.getTime(), ws.getTime()), we.getTime()));
-    const w1h = (w1End.getTime() - ws.getTime()) / 3600000;
-    const w2h = (we.getTime() - w1End.getTime()) / 3600000;
-    bar.push(segColumn(segWeight(w1h), 'blue-200', '窗口 1\n**100%**'));
-    bar.push(segColumn(segWeight(w2h), 'blue-200', '窗口 2\n**100%**'));
-    axis.push(segColumn(segWeight(w1h), null, `${hm(ws)}\n你开工`));
-    axis.push(segColumn(segWeight(w2h), null, `${hm(secondWarm)}\n续上额度`));
-    headline = md(`**明天 ${hm(ws)}–${endLabel(ws, we)}：${firstLabel}**`);
-    sub = md('默认约 **7.5 小时**，尽量吃满单个工具两段 5 小时窗口，约等于 **200%** 可用窗口。');
-    metric = md(`重点使用区间：**${hm(ws)}–${endLabel(ws, we)}**。将创建 **${windowCount}** 个预热任务；每次预热都会发起一次真实请求。`);
-    baseline = md('确认前可以调整两个预热时间；两个预热时间至少相隔 5 小时。');
-    phases.push(md(`✅ **开工前** · ${hm(prepStart)} 替你启动一档额度，${hm(ws)} 打开直接用。`));
-    phases.push(md(`🔄 **工作中** · ${hm(secondWarm)} 自动续上第二档，你不用管。`));
-  }
+  const w1End = new Date(Math.min(Math.max(secondWarm.getTime(), ws.getTime()), we.getTime()));
+  const w1h = (w1End.getTime() - ws.getTime()) / 3600000;
+  const w2h = (we.getTime() - w1End.getTime()) / 3600000;
+  bar.push(segColumn(segWeight(w1h), 'blue-200', '窗口 1\n**100%**'));
+  bar.push(segColumn(segWeight(w2h), 'blue-200', '窗口 2\n**100%**'));
+  axis.push(segColumn(segWeight(w1h), null, `${hm(ws)}\n你开工`));
+  axis.push(segColumn(segWeight(w2h), null, `${hm(secondWarm)}\n续上额度`));
+  const headline = md(`**明天 ${hm(ws)}–${endLabel(ws, we)}：${firstLabel}**`);
+  const sub = md('默认约 **7.5 小时**，尽量吃满单个工具两段 5 小时窗口，约等于 **200%** 可用窗口。');
+  const metric = md(`重点使用区间：**${hm(ws)}–${endLabel(ws, we)}**。将创建 **${windowCount}** 个预热任务；每次预热都会发起一次真实请求。`);
+  const baseline = md('确认前可以调整两个预热时间；两个预热时间至少相隔 5 小时。');
+  phases.push(md(`✅ **开工前** · ${hm(prepStart)} 替你启动一档额度，${hm(ws)} 打开直接用。`));
+  phases.push(md(`🔄 **工作中** · ${hm(secondWarm)} 自动续上第二档，你不用管。`));
 
   return [
     headline, sub,
@@ -610,11 +575,6 @@ function row(columns: Array<Record<string, unknown>>, margin: string): Record<st
 
 function segWeight(hours: number): number {
   return Math.max(2, Math.min(5, Math.round(hours)));
-}
-
-function fmtHours(hours: number): string {
-  const v = Math.round(hours * 10) / 10;
-  return Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1);
 }
 
 function snapshotLines(snap: UsageSnapshot | undefined): string[] {
