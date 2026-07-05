@@ -154,6 +154,15 @@ export function buildBedtimeCard(
 ): Card {
   const lines: string[] = [];
   if (statuses && report) lines.push(...dailyReportLines(statuses, report));
+  const now = report?.now ?? new Date();
+  const tomorrowPlan = planSummary(report?.activePlan, now);
+  if (tomorrowPlan?.isTomorrow) {
+    const buttons = [
+      button('查看明日计划', 'primary', cb('view_schedule')),
+      button('取消明日计划', 'default', cb('cancel_schedule', { target_date: tomorrowPlan.date })),
+    ];
+    return card('额度管家：明日计划已安排', lines, buttons, buttons.length);
+  }
   if (statuses) {
     const connected = Object.values(statuses)
       .filter((s) => isSchedulable(s) && s.usage && usableForPlanning(s.usage))
@@ -209,11 +218,14 @@ function dailyReportLines(
   // B1 预热执行 / B2 恢复
   const todays = (ctx.eventLog ?? []).filter((e) => localDate(new Date(e.ts)) === today);
   const warmups = todays.filter((e) => e.type === 'warmup');
+  const activePlan = planSummary(ctx.activePlan, now);
   if (warmups.length) {
     const ok = warmups.filter((e) => e.result === 'ok').length;
     const fail = warmups.filter((e) => e.result === 'fail').length;
     const skip = warmups.filter((e) => e.result === 'skip').length;
     lines.push(`**今日预热**：${warmups.length} 次（✅ ${ok} · ❌ ${fail} · ⏭️ ${skip}）`);
+  } else if (activePlan?.isTomorrow && activePlan.warmups.length) {
+    lines.push(`**今日预热**：今日无已执行预热；明日已安排 ${activePlan.warmups.length} 个预热节点`);
   } else {
     lines.push('**今日预热**：无定时预热任务');
   }
@@ -224,8 +236,8 @@ function dailyReportLines(
   }
 
   // A3 计划状态
-  const planLine = activePlanLine(ctx.activePlan);
-  if (planLine) lines.push(planLine);
+  const planLines = activePlanLines(activePlan);
+  if (planLines.length) lines.push(...planLines);
 
   lines.push('');
   return lines;
@@ -275,11 +287,22 @@ function consumptionLines(
   return out;
 }
 
-function activePlanLine(activePlan: unknown): string | null {
+interface PlanSummary {
+  date: string;
+  isTomorrow: boolean;
+  dateLabel: string;
+  start: string;
+  endText: string;
+  labels: string;
+  warmups: string[];
+}
+
+function planSummary(activePlan: unknown, now: Date): PlanSummary | null {
   const a = activePlan as Record<string, unknown> | null;
   if (!a || a['status'] !== 'active') return null;
   const startIso = String(a['work_start'] ?? '');
-  const dateLabel = startIso.length >= 10 ? startIso.slice(5, 10) : '';
+  const date = startIso.length >= 10 ? startIso.slice(0, 10) : '';
+  const dateLabel = date ? date.slice(5, 10) : '';
   const start = hhmmOf(a['work_start']);
   const end = hhmmOf(a['work_end']);
   const endIso = String(a['work_end'] ?? '');
@@ -287,7 +310,23 @@ function activePlanLine(activePlan: unknown): string | null {
   const endText = crossDay ? `次日 ${end}` : end;
   const agents = (a['agents'] as string[] | undefined) ?? [];
   const labels = agents.map((x) => PROVIDER_LABEL[x] ?? x).join(' + ');
-  return `📅 **已采用计划** ${dateLabel} ${start}–${endText}（${labels}）`;
+  const warmups = ((a['events'] as Array<Record<string, unknown>> | undefined) ?? [])
+    .filter((e) => String(e['kind'] ?? e['type'] ?? 'warmup') === 'warmup')
+    .map((e) => `${hhmmOf(e['at'])} · ${PROVIDER_LABEL[String(e['agent'])] ?? String(e['agent'] ?? '')}`)
+    .filter((x) => !x.includes('NaN'))
+    .sort();
+  const tomorrow = localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+  return { date, isTomorrow: date === tomorrow, dateLabel, start, endText, labels, warmups };
+}
+
+function activePlanLines(plan: PlanSummary | null): string[] {
+  if (!plan) return [];
+  if (plan.isTomorrow) {
+    const lines = [`📅 **明日已安排** ${plan.start}–${plan.endText}（${plan.labels}）`];
+    if (plan.warmups.length) lines.push(`预热：${plan.warmups.join('、')}`);
+    return lines;
+  }
+  return [`📅 **已采用计划** ${plan.dateLabel} ${plan.start}–${plan.endText}（${plan.labels}）`];
 }
 
 function localDate(d: Date): string {
