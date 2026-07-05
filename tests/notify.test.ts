@@ -105,7 +105,7 @@ describe('睡前/明日计划卡：已移除"复用上次"', () => {
 });
 
 describe('日报（晚卡上半段）', () => {
-  it('汇总额度/消耗/预热/恢复/计划，并接到明天计划询问', () => {
+  it('汇总今日额度/消耗/预热/恢复/计划，并在没有明日计划时继续询问', () => {
     const now = new Date(2026, 5, 23, 22, 0);
     const tsToday = (h: number) => new Date(2026, 5, 23, h, 0).toISOString();
     const statuses: Record<string, AgentStatus> = {
@@ -141,6 +141,40 @@ describe('日报（晚卡上半段）', () => {
     expect(text).toContain('周额度恢复 1 次');
     expect(text).toContain('已采用计划');
     expect(text).toContain('🌙 **明天有重度使用 AI 的计划吗？**'); // 仍接到原询问
+  });
+
+  it('已有明日计划时展示预热时间，不再继续询问是否规划', () => {
+    const now = new Date(2026, 6, 4, 22, 0);
+    const statuses: Record<string, AgentStatus> = {
+      codex: { provider: 'codex', state: AgentState.CONNECTED, usage: usage(1, 11) },
+    };
+    const ctx: DailyReportContext = {
+      now,
+      eventLog: [],
+      activePlan: {
+        status: 'active',
+        work_start: '2026-07-05T09:00:00',
+        work_end: '2026-07-05T16:31:00',
+        agents: ['codex'],
+        events: [
+          { agent: 'codex', kind: 'warmup', at: '2026-07-05T06:30:00', purpose: '开工前' },
+          { agent: 'codex', kind: 'warmup', at: '2026-07-05T11:31:00', purpose: '续上额度' },
+        ],
+      },
+    };
+    const card = buildBedtimeCard(statuses, null, ctx);
+    const text = md(card);
+    const whole = JSON.stringify(card);
+
+    expect(text).toContain('今日无已执行预热；明日已安排 2 个预热节点');
+    expect(text).toContain('📅 **明日已安排** 09:00–16:31（Codex）');
+    expect(text).toContain('预热：06:30 · Codex、11:31 · Codex');
+    expect(text).not.toContain('明天可规划');
+    expect(text).not.toContain('🌙 **明天有重度使用 AI 的计划吗？**');
+    expect(whole).toContain('查看明日计划');
+    expect(whole).toContain('取消明日计划');
+    expect(whole).not.toContain('设置明日计划');
+    expect(whole).not.toContain('tomorrow_skip');
   });
 
   it('无历史时给出最小日报，不报错', () => {
