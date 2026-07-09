@@ -66,6 +66,34 @@ describe('预热互斥（P0-7）', () => {
     expect(receipts.filter((r) => r.includes('已预热'))).toHaveLength(2);
   });
 
+  it('带 window_key 的恢复卡预热会标记窗口并清理待发队列', async () => {
+    const state = tmpState();
+    const { ctx } = ctxWithReceipts(state);
+    const windowKey = 'cc:fiveHour:2026-07-04T04:05:00.000Z';
+    state.get().pendingNotifications = [{ provider: 'cc', window: 'fiveHour', windowKey }];
+
+    await handleAction({ action: 'warmup_now', provider: 'cc', window_key: windowKey }, ctx);
+
+    expect(state.get().lastWarmedWindows.cc).toBe(windowKey);
+    expect(state.get().pendingNotifications).toHaveLength(0);
+  });
+
+  it('无 window_key 的手动预热优先标记待发恢复窗口', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-04T05:00:00.000Z'));
+    const state = tmpState();
+    const { ctx } = ctxWithReceipts(state);
+    const windowKey = 'cc:fiveHour:2026-07-04T04:05:00.000Z';
+    state.get().pendingNotifications = [{ provider: 'cc', window: 'fiveHour', windowKey }];
+
+    const action = handleAction({ action: 'warmup_now', provider: 'cc' }, ctx);
+    await vi.advanceTimersByTimeAsync(31);
+    await action;
+
+    expect(state.get().lastWarmedWindows.cc).toBe(windowKey);
+    expect(state.get().pendingNotifications).toHaveLength(0);
+  });
+
   it('不同 provider 互不阻塞', () => {
     expect(tryBeginWarmup('cc')).toBe(true);
     expect(tryBeginWarmup('codex')).toBe(true);

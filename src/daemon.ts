@@ -35,6 +35,8 @@ export function installDaemon(): void {
     join(homedir(), '.local', 'bin'),
     join(homedir(), '.npm-global', 'bin'),
   ].join(':');
+  const proxy = 'http://127.0.0.1:7890';
+  const noProxy = 'localhost,127.0.0.1,::1';
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,7 +50,15 @@ export function installDaemon(): void {
     <string>run</string>
   </array>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${path}</string></dict>
+  <dict>
+    <key>PATH</key><string>${path}</string>
+    <key>HTTP_PROXY</key><string>${proxy}</string>
+    <key>HTTPS_PROXY</key><string>${proxy}</string>
+    <key>http_proxy</key><string>${proxy}</string>
+    <key>https_proxy</key><string>${proxy}</string>
+    <key>NO_PROXY</key><string>${noProxy}</string>
+    <key>no_proxy</key><string>${noProxy}</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${join(LOG_DIR, 'daemon.log')}</string>
