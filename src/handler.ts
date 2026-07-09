@@ -28,6 +28,7 @@ import {
 } from './schedule_flow.js';
 import { activePlanIndex, planDate, type StateStore } from './state.js';
 import type { Usage } from './providers/index.js';
+import { markFiveHourWindowWarmed, markKnownRecoveryWindowWarmed } from './recovery_window.js';
 import { WARMUP_PROMPT, type WarmupScheduler } from './scheduler.js';
 import { endWarmup, tryBeginWarmup } from './warmup_lock.js';
 
@@ -324,6 +325,7 @@ async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promis
   const provider = String(payload['provider'] ?? '');
   if (provider !== 'cc' && provider !== 'codex') return ctx.receipt('预热工具无效');
   const st = ctx.state.get();
+  const action = String(payload['action'] ?? 'warmup_now');
   const windowKey = String(payload['window_key'] ?? '');
   if (windowKey && st.lastWarmedWindows[provider] === windowKey) {
     return ctx.receipt('这个窗口已经预热过了');
@@ -340,10 +342,17 @@ async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promis
   } finally {
     endWarmup(provider);
   }
+  let markedWindowKey: string | null = null;
   if (windowKey) {
-    st.lastWarmedWindows[provider] = windowKey;
-    ctx.state.save();
+    markKnownRecoveryWindowWarmed(st, provider, windowKey);
+    markedWindowKey = windowKey;
+  } else {
+    markedWindowKey = markFiveHourWindowWarmed(st, provider);
   }
+  ctx.state.save();
+  console.log(
+    `[handler] warmup result action=${action} provider=${provider} windowKey=${markedWindowKey ?? '(none)'} marked=${markedWindowKey ? 'yes' : 'no'} saved=yes`,
+  );
   return ctx.receipt(`✅ ${provider} 已预热，新的额度窗口已开始。\n模型回复：「${reply || '(空)'}」`);
 }
 

@@ -10,11 +10,21 @@ export interface Connected {
 }
 
 export async function connectChannel(cfg: AppConfig): Promise<Connected> {
+  let exitingForReconnect = false;
   const channel = createLarkChannel({
     appId: cfg.app.id,
     appSecret: cfg.app.secret,
     source: 'quota-butler',
-    keepalive: { enabled: true },
+    respectProxyEnv: true,
+    keepalive: {
+      enabled: true,
+      onUnrecoverable: (err) => {
+        if (exitingForReconnect) return;
+        exitingForReconnect = true;
+        console.error('[quota-butler] channel unrecoverable; exiting for launchd restart:', err);
+        setTimeout(() => process.exit(75), 0);
+      },
+    },
   });
   await channel.connect();
   let ownerId: string | undefined;

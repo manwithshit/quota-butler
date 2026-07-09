@@ -36,14 +36,25 @@ export function sameLegacyRecoveryWindowKey(
 }
 
 export function markFiveHourWindowWarmed(state: State, provider: string, now = new Date()): string | null {
+  const pendingWindowKey = firstPendingFiveHourWindowKey(state, provider, now);
+  if (pendingWindowKey) {
+    markKnownRecoveryWindowWarmed(state, provider, pendingWindowKey);
+    return pendingWindowKey;
+  }
+
   const resetAt = lastKnownFiveHourReset(state, provider);
   if (!resetAt) return null;
   const age = now.getTime() - resetAt.getTime();
   if (age < 0 || age > WARMED_WINDOW_FRESHNESS_MS) return null;
   const windowKey = recoveryWindowKey(provider, 'fiveHour', resetAt);
-  state.lastWarmedWindows = { ...(state.lastWarmedWindows ?? {}), [provider]: windowKey };
-  removePendingRecoveryForWarmedWindow(state, provider, resetAt);
+  markKnownRecoveryWindowWarmed(state, provider, windowKey);
   return windowKey;
+}
+
+export function markKnownRecoveryWindowWarmed(state: State, provider: string, windowKey: string): void {
+  state.lastWarmedWindows = { ...(state.lastWarmedWindows ?? {}), [provider]: windowKey };
+  const parsed = parseWindowKey(provider, windowKey);
+  if (parsed?.window === 'fiveHour') removePendingRecoveryForWarmedWindow(state, provider, parsed.resetAt);
 }
 
 export function warmedFiveHourWindowMatches(state: State, provider: string, resetAt: Date): boolean {
@@ -78,6 +89,44 @@ function removePendingRecoveryForWarmedWindow(state: State, provider: string, re
   ) {
     state.pendingRecovery = null;
   }
+}
+
+function firstPendingFiveHourWindowKey(state: State, provider: string, now: Date): string | null {
+  const candidates = state.pendingNotifications ?? [];
+  for (const item of candidates) {
+    if (item.provider !== provider) continue;
+    const parsed = parseWindowKey(provider, item.windowKey);
+    if (!parsed || parsed.window !== 'fiveHour') continue;
+    const age = now.getTime() - parsed.resetAt.getTime();
+    if (age >= 0 && age <= WARMED_WINDOW_FRESHNESS_MS) return item.windowKey;
+  }
+  const pending = state.pendingRecovery as
+    | { provider?: string; windowKey?: string; window?: QuotaWindowName }
+    | null;
+  if (pending?.provider !== provider || !pending.windowKey) return null;
+  const parsed = parseWindowKey(provider, pending.windowKey);
+  if (!parsed || parsed.window !== 'fiveHour') return null;
+  const age = now.getTime() - parsed.resetAt.getTime();
+  return age >= 0 && age <= WARMED_WINDOW_FRESHNESS_MS ? pending.windowKey : null;
+}
+
+function parseWindowKey(provider: string, windowKey: string): { window: QuotaWindowName; resetAt: Date } | null {
+  const modernPrefix = `${provider}:`;
+  if (!windowKey.startsWith(modernPrefix)) return null;
+  const rest = windowKey.slice(modernPrefix.length);
+  const firstColon = rest.indexOf(':');
+  let window: QuotaWindowName = 'fiveHour';
+  let iso = rest;
+  if (firstColon > 0) {
+    const rawWindow = rest.slice(0, firstColon);
+    if (rawWindow === 'fiveHour' || rawWindow === 'sevenDay') {
+      window = rawWindow;
+      iso = rest.slice(firstColon + 1);
+    }
+  }
+  const resetAt = new Date(iso);
+  if (Number.isNaN(resetAt.getTime())) return null;
+  return { window, resetAt };
 }
 
 function lastKnownFiveHourReset(state: State, provider: string): Date | null {
