@@ -56,6 +56,8 @@ npx github:manwithshit/quota-butler status
 npx github:manwithshit/quota-butler stop
 ```
 
+If your network requires a proxy, set `QUOTA_BUTLER_PROXY` before starting (for example, `http://127.0.0.1:7890`). Without it, the daemon connects directly.
+
 ## Feishu/Lark Entry
 
 Supported text commands:
