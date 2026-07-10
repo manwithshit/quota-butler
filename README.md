@@ -56,6 +56,8 @@ npx github:manwithshit/quota-butler status
 npx github:manwithshit/quota-butler stop
 ```
 
+需要代理时，在启动前设置 `QUOTA_BUTLER_PROXY`（例如 `http://127.0.0.1:7890`）；未设置时后台进程保持直连。
+
 ## 飞书/Lark 入口
 
 支持的文字命令：

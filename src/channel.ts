@@ -9,6 +9,10 @@ export interface Connected {
   botOpenId: string | undefined;
 }
 
+export function shouldRestartWithLaunchd(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.QUOTA_BUTLER_DAEMON === '1';
+}
+
 export async function connectChannel(cfg: AppConfig): Promise<Connected> {
   let exitingForReconnect = false;
   const channel = createLarkChannel({
@@ -19,6 +23,10 @@ export async function connectChannel(cfg: AppConfig): Promise<Connected> {
     keepalive: {
       enabled: true,
       onUnrecoverable: (err) => {
+        if (!shouldRestartWithLaunchd()) {
+          console.error('[quota-butler] channel unrecoverable; foreground process will keep retrying:', err);
+          return;
+        }
         if (exitingForReconnect) return;
         exitingForReconnect = true;
         console.error('[quota-butler] channel unrecoverable; exiting for launchd restart:', err);
