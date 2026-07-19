@@ -9,6 +9,7 @@ export interface PlanEventRecord {
   kind: string;
   at: string;
   purpose: string;
+  slot?: string;
 }
 
 export interface PlanRecord {
@@ -68,6 +69,7 @@ export function planRecord(plan: SchedulePlan): PlanRecord {
       kind: e.kind,
       at: localIso(e.at),
       purpose: e.purpose,
+      ...(e.slot ? { slot: e.slot } : {}),
     })),
     request: requestToPayloadShape(plan.request),
   };

@@ -6,6 +6,7 @@ import {
   buildScheduleCard,
   buildBedtimeCard,
   buildTimeModeCard,
+  buildAgentControlCard,
   type Card,
   type DailyReportContext,
 } from '../src/notify.js';
@@ -241,12 +242,13 @@ describe('buildScheduleCard', () => {
     expect(text).not.toContain('准备第一个窗口'); // 旧技术风文案不出现在可见区（仅在内嵌 payload）
   });
 
-  it('schedule card includes two warmup pickers but no tool switching/remind-only buttons', () => {
+  it('schedule card includes two warmup pickers and the explicit tool selector', () => {
     const plan = buildPlan(planReq({}), { cc: usage(20), codex: usage(30) });
     const whole = JSON.stringify(buildScheduleCard(plan));
     expect(whole).toContain('first_warmup');
     expect(whole).toContain('second_warmup');
-    expect(whole).not.toContain('更换 AI 工具');
+    expect(whole).toContain('选择 / 更换 AI 工具');
+    expect(whole).toContain('adjust_schedule_agents');
     expect(whole).not.toContain('仅提醒');
   });
 
@@ -265,5 +267,59 @@ describe('buildScheduleCard', () => {
     expect(text).toContain('1** 个开工前预热任务');
     expect(text).not.toContain('200%');
     expect(text).not.toContain('两个预热时间');
+  });
+
+  it('dual-agent control restores the explicit both option', () => {
+    const request = planReq({});
+    const statuses: Record<string, AgentStatus> = {
+      cc: { provider: 'cc', state: AgentState.CONNECTED, usage: { ...usage(20), provider: 'cc' } },
+      codex: { provider: 'codex', state: AgentState.CONNECTED, usage: usage(30) },
+    };
+    const whole = JSON.stringify(buildAgentControlCard(request, statuses));
+    expect(whole).toContain('Claude Code');
+    expect(whole).toContain('Codex');
+    expect(whole).toContain('两个都用');
+    expect(whole).toContain('\"agent_strategy\":\"both\"');
+  });
+
+  it('monthly-only Codex does not enter the dual-agent selector', () => {
+    const request = planReq({});
+    const statuses: Record<string, AgentStatus> = {
+      cc: { provider: 'cc', state: AgentState.CONNECTED, usage: { ...usage(20), provider: 'cc' } },
+      codex: {
+        provider: 'codex',
+        state: AgentState.CONNECTED,
+        usage: {
+          provider: 'codex',
+          fiveHour: null,
+          sevenDay: null,
+          monthly: { utilization: 30, resetsAt: new Date('2026-07-31T00:00:00Z'), windowSeconds: 2592000 },
+        },
+      },
+    };
+    const whole = JSON.stringify(buildAgentControlCard(request, statuses));
+    expect(whole).toContain('当前仅检测到 Claude Code');
+    expect(whole).not.toContain('两个都用');
+    expect(whole).not.toContain('\"agent_strategy\":\"both\"');
+  });
+
+  it('mixed dual schedule shows three tasks but only two editable primary pickers', () => {
+    const weekly: Usage = {
+      provider: 'codex',
+      fiveHour: null,
+      sevenDay: { utilization: 38, resetsAt: new Date('2026-07-20T04:15:19Z'), windowSeconds: 604800 },
+    };
+    const plan = buildPlan(
+      planReq({ timeMode: 'range', workEnd: '18:00', agentStrategy: 'both' }),
+      { cc: { ...usage(20), provider: 'cc' }, codex: weekly },
+    );
+    const card = buildScheduleCard(plan);
+    const text = md(card);
+    const whole = JSON.stringify(card);
+    expect(text).toContain('Claude Code + Codex');
+    expect(text).toContain('**3** 个预热任务');
+    expect(text).toContain('一次连通预热');
+    expect(whole.match(/\"name\":\"first_warmup\"/g)).toHaveLength(1);
+    expect(whole.match(/\"name\":\"second_warmup\"/g)).toHaveLength(1);
   });
 });
