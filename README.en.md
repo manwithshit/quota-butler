@@ -22,7 +22,7 @@ Send `菜单` or `menu` to open the command card. From there you can query quota
 
 ### Tomorrow Plan
 
-Pick one start time, and Quota Butler selects one available AI tool based on the latest quota state. Tools with a 5-hour window get two warm-up points; weekly-only Codex gets one connectivity warm-up before work instead of a fake 5-hour relay. You can adjust the warm-up time before adopting the plan.
+Pick one start time, and Quota Butler selects one available AI tool by default; you can also explicitly choose both tools. A primary tool with a 5-hour window gets two warm-up points, while weekly-only Codex gets one connectivity warm-up instead of a fake 5-hour window. A dual-agent plan keeps both tools in one plan so they are adopted and cancelled together. Before adopting it, you can adjust the primary tool's warm-up times or switch tools.
 
 ![Tomorrow plan](docs/images/tomorrow-plan.png)
 

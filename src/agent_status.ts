@@ -170,8 +170,7 @@ export async function detectAgents(
     }
     try {
       // 感知路径：已知无 5h 窗口时禁刷新；档位未知仍允许一次刷新以学习档位。
-      const knownTier = opts.knownTiers?.[provider];
-      const allowRefresh = !opts.sensing || knownTier == null || knownTier === 'has-5h';
+      const allowRefresh = shouldAllowUsageRefresh(provider, opts);
       const usage = await getProvider(provider).readUsage({ allowRefresh });
       usageCache.set(provider, { usage, at: Date.now() });
       rateLimitStrikes.delete(provider); // 读通了，清零计数
@@ -207,6 +206,12 @@ export async function detectAgents(
     }
   }
   return results;
+}
+
+export function shouldAllowUsageRefresh(provider: string, opts: DetectOptions): boolean {
+  if (!opts.sensing) return true;
+  const knownTier = opts.knownTiers?.[provider];
+  return knownTier == null || knownTier === 'has-5h';
 }
 
 export async function findAgentExecutable(provider: string): Promise<string | null> {

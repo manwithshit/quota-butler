@@ -70,11 +70,43 @@ describe('buildPlan', () => {
     expect(plan.reason).toContain('不再安排 5 小时窗口接力');
   });
 
-  it('both strategy is rejected because one plan only uses one agent', () => {
-    expect(() => buildPlan(
+  it('both strategy restores the historical two-agent relay plan', () => {
+    const plan = buildPlan(
       req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'both' }),
       { cc: usage(20), codex: usage(30) },
-    )).toThrow('一次只编排一个');
+    );
+    expect(plan.agents).toEqual(['cc', 'codex']);
+    expect(plan.events.map((event) => [event.agent, hm(event.at), event.slot])).toEqual([
+      ['cc', '06:30', 'primary-first'],
+      ['codex', '08:50', 'relay-pin'],
+      ['cc', '11:31', 'primary-second'],
+      ['codex', '13:50', 'relay'],
+    ]);
+    expect(plan.reason).toContain('接力');
+  });
+
+  it('mixed 5h + weekly-only dual plan does not invent Codex 5h windows', () => {
+    const plan = buildPlan(
+      req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'both' }),
+      { cc: usage(20), codex: weeklyUsage(38) },
+    );
+    expect(plan.agents).toEqual(['cc', 'codex']);
+    expect(plan.events.map((event) => [event.agent, hm(event.at), event.slot])).toEqual([
+      ['cc', '06:30', 'primary-first'],
+      ['cc', '11:31', 'primary-second'],
+      ['codex', '13:50', 'backup-connect'],
+    ]);
+    expect(plan.events.filter((event) => event.agent === 'codex')).toHaveLength(1);
+    expect(plan.reason).toContain('周额度模式');
+  });
+
+  it('short explicit dual plan warms both tools without inventing an out-of-range relay', () => {
+    const plan = buildPlan(
+      req({ timeMode: 'range', workStart: '09:00', workEnd: '13:00', agentStrategy: 'both' }),
+      { cc: usage(20), codex: weeklyUsage(38) },
+    );
+    expect(plan.events.filter((event) => event.agent === 'codex').map((event) => hm(event.at))).toEqual(['06:30']);
+    expect(plan.reason).toContain('都在开工前完成连通预热');
   });
 
   it('keeps warmups from the request instead of recalculating from a cross-midnight range', () => {

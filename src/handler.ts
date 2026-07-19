@@ -454,31 +454,41 @@ function applyAdoptForm(candidate: Record<string, unknown>, formValue: unknown):
   const events = ([...((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])] as Array<Record<string, unknown>>)
     .map((event) => ({ ...event }));
   if (events.length < 1) throw new Error('计划缺少预热时间');
-  const first = normalizeHHmm(form['first_warmup'] ?? hhmmOf(events[0]?.['at']));
-  if (events.length === 1) {
+  const firstAgent = String(((record['agents'] as string[] | undefined) ?? [])[0] ?? '');
+  const markedPrimary = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => String(event['slot'] ?? '').startsWith('primary-'));
+  const primary = markedPrimary.length
+    ? markedPrimary
+    : events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event }) => String(event['agent'] ?? '') === firstAgent);
+  if (primary.length < 1) throw new Error('计划缺少主工具预热时间');
+  primary.sort((a, b) => String(a.event['at']).localeCompare(String(b.event['at'])));
+  const first = normalizeHHmm(form['first_warmup'] ?? hhmmOf(primary[0]?.event['at']));
+  if (primary.length === 1) {
     const workStart = new Date(String(record['work_start']));
-    events[0]!['at'] = localIso(setTime(workStart, first));
-    record['events'] = events;
+    events[primary[0]!.index]!['at'] = localIso(setTime(workStart, first));
+    record['events'] = events.sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
     record['request'] = {
       ...((record['request'] as Record<string, unknown>) ?? {}),
       first_warmup: first,
     };
     return record;
   }
-  const second = normalizeHHmm(form['second_warmup'] ?? hhmmOf(events[1]?.['at']));
+  const second = normalizeHHmm(form['second_warmup'] ?? hhmmOf(primary[1]?.event['at']));
   validateWarmupTimes(first, second);
   const workStart = new Date(String(record['work_start']));
   const warmups = [setTime(workStart, first), setTime(workStart, second)].sort((a, b) => a.getTime() - b.getTime());
   const workEnd = new Date(warmups[1]!.getTime() + 5 * 3600000);
-  events.sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
-  events[0]!['at'] = localIso(warmups[0]!);
-  events[1]!['at'] = localIso(warmups[1]!);
+  events[primary[0]!.index]!['at'] = localIso(warmups[0]!);
+  events[primary[1]!.index]!['at'] = localIso(warmups[1]!);
   record['events'] = events.sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
   record['work_end'] = localIso(workEnd);
   record['request'] = {
     ...((record['request'] as Record<string, unknown>) ?? {}),
-    first_warmup: hhmmOf(events[0]!['at']),
-    second_warmup: hhmmOf(events[1]!['at']),
+    first_warmup: first,
+    second_warmup: second,
     work_end: hhmmOf(workEnd),
   };
   return record;

@@ -126,7 +126,7 @@ describe('预热互斥（P0-7）', () => {
 });
 
 describe('换工具卡（P0-4）', () => {
-  it('不再提供"两个都用"按钮，只有单选工具', () => {
+  it('两个工具都可用时提供显式"两个都用"入口', () => {
     const request: PlanRequest = {
       targetDate: '2026-07-05', timeMode: 'point', workStart: '09:00', workEnd: '16:31',
       agentStrategy: 'auto', firstWarmup: '06:30', secondWarmup: '11:31',
@@ -139,6 +139,20 @@ describe('换工具卡（P0-4）', () => {
     const text = JSON.stringify(buildAgentControlCard(request, statuses));
     expect(text).toContain('Claude Code');
     expect(text).toContain('Codex');
+    expect(text).toContain('两个都用');
+    expect(text).toContain('"both"');
+  });
+
+  it('只有一个工具可用时不提供双 Agent 入口', () => {
+    const request: PlanRequest = {
+      targetDate: '2026-07-05', timeMode: 'point', workStart: '09:00', workEnd: '16:31',
+      agentStrategy: 'auto', firstWarmup: '06:30', secondWarmup: '11:31',
+    };
+    const usage = { provider: 'cc', fiveHour: { utilization: 10, resetsAt: null, windowSeconds: 18000 } };
+    const text = JSON.stringify(buildAgentControlCard(request, {
+      cc: { provider: 'cc', state: AgentState.CONNECTED, usage },
+    }));
+    expect(text).toContain('当前仅检测到 Claude Code');
     expect(text).not.toContain('两个都用');
     expect(text).not.toContain('"both"');
   });

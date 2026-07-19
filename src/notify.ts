@@ -1,6 +1,6 @@
 // 飞书 CardKit 2.0 卡片构建。移植自 Python notify.py。
 
-import { AgentState, isSchedulable, usableForPlanning, type AgentStatus } from './agent_status.js';
+import { AgentState, isSchedulable, usableForPlanning, usableForPlanningAt, type AgentStatus } from './agent_status.js';
 import { AGENT_LABELS, type SchedulePlan } from './planner.js';
 import { planRecord } from './plan_record.js';
 import {
@@ -417,15 +417,18 @@ export function buildTimeCard(request: PlanRequest, error = ''): Card {
 }
 
 export function buildAgentControlCard(request: PlanRequest, statuses: Record<string, AgentStatus>): Card {
-  const available = ['cc', 'codex'].filter((p) => statuses[p] && isSchedulable(statuses[p]!));
+  const planningAt = new Date(`${request.targetDate}T${request.workStart}:00`);
+  const available = ['cc', 'codex'].filter((p) => {
+    const status = statuses[p];
+    return status && isSchedulable(status) && status.usage && usableForPlanningAt(status.usage, planningAt);
+  });
   if (available.length <= 1) {
     const label = available[0] ? PROVIDER_LABEL[available[0]] : '可用 Agent';
     return card('更换 AI 工具', [`当前仅检测到 ${label}。`, '', '重新检测后会按最新状态生成计划。'], [
       button('重新检测', 'primary', cb('redetect_agents', { request: requestToPayloadShape(request) })),
     ]);
   }
-  // 一个计划只编排一个工具（planner 对 both 直接报错），不提供"两个都用"入口。
-  const buttons = ([['Claude Code', 'cc'], ['Codex', 'codex']] as const).map(
+  const buttons = ([['Claude Code', 'cc'], ['Codex', 'codex'], ['两个都用', 'both']] as const).map(
     ([label, strategy]) => {
       const candidate: PlanRequest = { ...request, agentStrategy: strategy };
       return button(label, strategy === request.agentStrategy ? 'primary' : 'default', {
@@ -506,18 +509,23 @@ export function buildScheduleCard(plan: SchedulePlan): Card {
   const elements = scheduleTimelineElements(plan);
   const events = ([...record['events']] as unknown as Array<Record<string, unknown>>)
     .sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
+  const firstAgent = plan.agents[0]!;
+  const markedPrimary = events.filter((event) => String(event['slot'] ?? '').startsWith('primary-'));
+  const primaryEvents = markedPrimary.length
+    ? markedPrimary
+    : events.filter((event) => String(event['agent']) === firstAgent);
   const formElements: Array<Record<string, unknown>> = [
     {
       tag: 'picker_time', name: 'first_warmup',
-      placeholder: { tag: 'plain_text', content: events.length === 1 ? '开工前预热' : '第一次预热' },
-      initial_time: hhmmOf(events[0]?.['at']), required: true,
+      placeholder: { tag: 'plain_text', content: primaryEvents.length === 1 ? '开工前预热' : '第一次预热' },
+      initial_time: hhmmOf(primaryEvents[0]?.['at']), required: true,
     },
   ];
-  if (events.length > 1) {
+  if (primaryEvents.length > 1) {
     formElements.push({
       tag: 'picker_time', name: 'second_warmup',
       placeholder: { tag: 'plain_text', content: '第二次预热' },
-      initial_time: hhmmOf(events[1]?.['at']), required: true,
+      initial_time: hhmmOf(primaryEvents[1]?.['at']), required: true,
     });
   }
   formElements.push({
@@ -530,6 +538,19 @@ export function buildScheduleCard(plan: SchedulePlan): Card {
     tag: 'form',
     name: 'adopt_schedule_form',
     elements: formElements,
+  });
+  elements.push({
+    tag: 'column_set',
+    columns: [
+      {
+        tag: 'column',
+        elements: [
+          button('选择 / 更换 AI 工具', 'default', cb('adjust_schedule_agents', {
+            request: requestToPayloadShape(plan.request),
+          })),
+        ],
+      },
+    ],
   });
   return { schema: '2.0', config: { summary: { content: '额度管家：明日计划预览' } }, body: { elements } };
 }
@@ -544,6 +565,39 @@ function scheduleTimelineElements(plan: SchedulePlan): Array<Record<string, unkn
   const prepStart = fw[0] ?? ws;
   const secondWarm = fw[1] ?? we;
   const windowCount = Math.max(1, fw.length);
+
+  if (plan.agents.length === 2) {
+    const relay = plan.agents[1]!;
+    const relayLabel = PROVIDER_LABEL[relay]!;
+    const relayEvents = plan.events.filter((event) => event.agent === relay).sort((a, b) => a.at.getTime() - b.at.getTime());
+    const relayPoint = relayEvents[relayEvents.length - 1]?.at ?? we;
+    const hasRelayPhase = relayPoint.getTime() > ws.getTime();
+    const primaryMode = fw.length > 1 ? '两段 5 小时窗口' : '周额度';
+    const relayMode = relayEvents.some((event) => event.slot === 'relay-pin') ? '5 小时窗口接力' : '一次连通预热';
+    const phases: Array<Record<string, unknown>> = [
+      md(`✅ **主工具** · ${firstLabel}：${fw.map((at) => hm(at)).join('、')}（${primaryMode}）`),
+    ];
+    for (const event of relayEvents) {
+      phases.push(md(`🔄 **接力工具** · ${hm(event.at)} ${relayLabel}：${event.purpose}`));
+    }
+    return [
+      md(`**明天 ${hm(ws)}–${endLabel(ws, we)}：${firstLabel} + ${relayLabel}**`),
+      md(hasRelayPhase
+        ? `前半段优先使用 ${firstLabel}，后半段由 ${relayLabel} 接力。`
+        : `${firstLabel} 与 ${relayLabel} 都在开工前就绪，可按需切换。`),
+      row(
+        [segColumn(2, 'blue-200', `${firstLabel}\n主工具`), segColumn(2, 'wathet-200', `${relayLabel}\n接力`)],
+        '8px 0px 2px 0px',
+      ),
+      row(
+        [segColumn(2, null, `${hm(ws)}\n你开工`), segColumn(2, null, `${hm(relayPoint)}\n${hasRelayPhase ? '接力点' : '备用就绪'}`)],
+        '0px 0px 6px 0px',
+      ),
+      md(`将创建 **${plan.events.length}** 个预热任务：${firstLabel} 使用${primaryMode}，${relayLabel} 使用${relayMode}。`),
+      md(`确认前只调整主工具的预热时间；${relayLabel} 的接力时间由工作时段自动派生。`),
+      ...phases,
+    ];
+  }
 
   if (fw.length === 1) {
     const duration = Math.max(1, (we.getTime() - ws.getTime()) / 3600000);

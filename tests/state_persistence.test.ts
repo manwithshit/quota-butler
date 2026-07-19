@@ -60,4 +60,26 @@ describe('StateStore 持久化（P0-1 / P1-9）', () => {
     expect(second.loadWarning).toBeNull();
     expect(second.get().lastAction).toBe('kept');
   });
+
+  it('persists weekly-only tier and nullable 5h snapshot without affecting 5h accounts', () => {
+    const path = tmpPath();
+    const store = new StateStore(path);
+    store.recordUsageSnapshot('codex', {
+      provider: 'codex',
+      fiveHour: null,
+      sevenDay: { utilization: 23, resetsAt: new Date('2026-07-26T12:56:31Z'), windowSeconds: 604800 },
+    });
+    store.recordUsageSnapshot('cc', {
+      provider: 'cc',
+      fiveHour: { utilization: 40, resetsAt: new Date('2026-07-20T01:00:00Z'), windowSeconds: 18000 },
+      sevenDay: { utilization: 30, resetsAt: new Date('2026-07-25T12:00:00Z'), windowSeconds: 604800 },
+    });
+    store.save();
+
+    const loaded = new StateStore(path).get();
+    expect(loaded.providerTiers).toEqual({ codex: 'weekly-only', cc: 'has-5h' });
+    expect(loaded.usageSnapshots.codex?.fiveHourUtil).toBeNull();
+    expect(loaded.usageSnapshots.codex?.sevenDayUtil).toBe(23);
+    expect(loaded.usageSnapshots.cc?.fiveHourUtil).toBe(40);
+  });
 });

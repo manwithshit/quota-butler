@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { planningUsageForStatus, usableForPlanning, usableForPlanningAt } from '../src/agent_status.js';
+import { planningUsageForStatus, shouldAllowUsageRefresh, usableForPlanning, usableForPlanningAt } from '../src/agent_status.js';
 import { activePlanIndex, planIsExpired, StateStore, type State } from '../src/state.js';
 import { buildCurrentPlansCard, buildManualWarmupCard } from '../src/notify.js';
 import { AgentState, type AgentStatus } from '../src/agent_status.js';
@@ -214,6 +214,19 @@ describe('usableForPlanning', () => {
   });
 });
 
+describe('Codex sensing refresh policy', () => {
+  it('preserves refresh for active reads and known 5h accounts', () => {
+    expect(shouldAllowUsageRefresh('codex', { sensing: false, knownTiers: { codex: 'weekly-only' } })).toBe(true);
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: { codex: 'has-5h' } })).toBe(true);
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: {} })).toBe(true);
+  });
+
+  it('blocks background refresh for weekly-only and monthly-only accounts', () => {
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: { codex: 'weekly-only' } })).toBe(false);
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: { codex: 'monthly-only' } })).toBe(false);
+  });
+});
+
 describe('planIsExpired', () => {
   it('expires a plan once its work_end has passed', () => {
     const now = new Date('2026-06-23T16:00:00');
@@ -370,5 +383,35 @@ describe('current plans and immediate warmup UX', () => {
     expect(whole).toContain('Codex：当前 5 小时窗口已在进行中，无需立即预热');
     expect(whole).not.toContain('选择要立即预热');
     expect(whole).not.toContain('暂时没有需要立即预热');
+  });
+
+  it('allows weekly-only Codex connectivity warmup but still blocks monthly-only Codex', () => {
+    const weeklyCard = JSON.stringify(buildManualWarmupCard({
+      codex: {
+        provider: 'codex',
+        state: AgentState.CONNECTED,
+        usage: {
+          provider: 'codex',
+          fiveHour: null,
+          sevenDay: { utilization: 23, resetsAt: new Date(Date.now() + 86400000), windowSeconds: 604800 },
+        },
+      },
+    }));
+    expect(weeklyCard).toContain('选择要立即预热');
+    expect(weeklyCard).toContain('\"provider\":\"codex\"');
+
+    const monthlyCard = JSON.stringify(buildManualWarmupCard({
+      codex: {
+        provider: 'codex',
+        state: AgentState.CONNECTED,
+        usage: {
+          provider: 'codex',
+          fiveHour: null,
+          monthly: { utilization: 20, resetsAt: new Date(Date.now() + 86400000), windowSeconds: 2592000 },
+        },
+      },
+    }));
+    expect(monthlyCard).toContain('只有月度额度，暂不参与预热');
+    expect(monthlyCard).not.toContain('\"provider\":\"codex\"');
   });
 });

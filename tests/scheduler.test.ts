@@ -75,6 +75,23 @@ describe('WarmupScheduler.arm', () => {
     sch.cancelAll();
   });
 
+  it('arms every event in a mixed dual-agent plan independently', () => {
+    const state = tmpState();
+    const sch = new WarmupScheduler(fakeChannel, 'ou_x', state);
+    const base = Date.now() + 3600000;
+    const events = [
+      { agent: 'cc', kind: 'warmup', at: new Date(base).toISOString(), purpose: 'primary first' },
+      { agent: 'cc', kind: 'warmup', at: new Date(base + 5 * 3600000).toISOString(), purpose: 'primary second' },
+      { agent: 'codex', kind: 'warmup', at: new Date(base + 7 * 3600000).toISOString(), purpose: 'weekly relay' },
+    ];
+
+    const result = sch.arm({ plan_id: 'dual', status: 'active', events });
+
+    expect(result).toEqual({ armed: 3, skipped: 0 });
+    expect(sch.pending).toBe(3);
+    sch.cancelAll();
+  });
+
   it('queues scheduled warmup receipts during quiet hours and flushes them after 8am', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 5, 24, 6, 30));

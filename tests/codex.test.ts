@@ -15,6 +15,20 @@ const FREE_BODY = JSON.stringify({
   },
 });
 
+const WEEKLY_ONLY_BODY = JSON.stringify({
+  rate_limit: {
+    primary_window: { used_percent: 23, limit_window_seconds: 604800, reset_at: 1785070591 },
+    secondary_window: null,
+  },
+});
+
+const FIVE_PLUS_WEEKLY_BODY = JSON.stringify({
+  rate_limit: {
+    primary_window: { used_percent: 40, limit_window_seconds: 18000, reset_at: 1785070591 },
+    secondary_window: { used_percent: 30, limit_window_seconds: 604800, reset_at: 1785502591 },
+  },
+});
+
 describe('CodexProvider —— 感知侧刷新闸门', () => {
   it('allowRefresh=false 且 401：不跑 codex exec，抛 stale（→上层 UNAVAILABLE，不误判登出）', async () => {
     const refreshToken = vi.fn(async () => {});
@@ -52,6 +66,30 @@ describe('CodexProvider —— 感知侧刷新闸门', () => {
 
     await p.readUsage();
     expect(refreshToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies a weekly-only Codex response without inventing a 5h window', async () => {
+    const p = new CodexProvider({
+      readAuth: async () => AUTH,
+      fetchUsage: async () => ({ status: 200, body: WEEKLY_ONLY_BODY }),
+      refreshToken: async () => {},
+    });
+    const usage = await p.readUsage({ allowRefresh: false });
+    expect(usage.fiveHour).toBeNull();
+    expect(usage.sevenDay?.utilization).toBe(23);
+    expect(usage.monthly ?? null).toBeNull();
+  });
+
+  it('keeps the legacy 5h + weekly response shape unchanged', async () => {
+    const p = new CodexProvider({
+      readAuth: async () => AUTH,
+      fetchUsage: async () => ({ status: 200, body: FIVE_PLUS_WEEKLY_BODY }),
+      refreshToken: async () => {},
+    });
+    const usage = await p.readUsage({ allowRefresh: false });
+    expect(usage.fiveHour?.utilization).toBe(40);
+    expect(usage.sevenDay?.utilization).toBe(30);
+    expect(usage.monthly ?? null).toBeNull();
   });
 
   it('stale 错误归类为 ProviderError，便于上层 kind 分流', async () => {
