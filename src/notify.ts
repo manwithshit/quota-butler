@@ -73,6 +73,16 @@ export function buildStatusCard(
         if (rem7 != null && rem7 < 20 && rem7 < rem5) {
           lines.push(`⚠️ 7 天额度仅剩 **${rem7.toFixed(0)}%**，是真正的上限——5 小时窗口再充足也用不了多少。`);
         }
+      } else if (status.usage.sevenDay) {
+        // 新版 Codex：取消 5 小时窗口，只保留周额度。
+        const weekly = status.usage.sevenDay;
+        const rem7 = 100 - weekly.utilization;
+        lines.push(
+          `**${label} · 周额度**`,
+          `${usageBar(rem7)} 还剩 **${rem7.toFixed(0)}%**`,
+          `${remainingStatus(rem7)} · 重置：**${formatReset(weekly)}**`,
+          'ℹ️ 当前没有 5 小时窗口；计划会在开工前做一次连通预热，不再安排双窗口接力。',
+        );
       } else if (status.usage.monthly) {
         // 免费档 Codex：只有月度窗口，不参与"预热/接力"计划。
         const m = status.usage.monthly;
@@ -496,27 +506,30 @@ export function buildScheduleCard(plan: SchedulePlan): Card {
   const elements = scheduleTimelineElements(plan);
   const events = ([...record['events']] as unknown as Array<Record<string, unknown>>)
     .sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
+  const formElements: Array<Record<string, unknown>> = [
+    {
+      tag: 'picker_time', name: 'first_warmup',
+      placeholder: { tag: 'plain_text', content: events.length === 1 ? '开工前预热' : '第一次预热' },
+      initial_time: hhmmOf(events[0]?.['at']), required: true,
+    },
+  ];
+  if (events.length > 1) {
+    formElements.push({
+      tag: 'picker_time', name: 'second_warmup',
+      placeholder: { tag: 'plain_text', content: '第二次预热' },
+      initial_time: hhmmOf(events[1]?.['at']), required: true,
+    });
+  }
+  formElements.push({
+    tag: 'button', name: 'submit_adopt_schedule',
+    text: { tag: 'plain_text', content: '采用计划' },
+    type: 'primary', width: 'fill', form_action_type: 'submit',
+    behaviors: [{ type: 'callback', value: cb('adopt_schedule', { plan: record }) }],
+  });
   elements.push({
     tag: 'form',
     name: 'adopt_schedule_form',
-    elements: [
-      {
-        tag: 'picker_time', name: 'first_warmup',
-        placeholder: { tag: 'plain_text', content: '第一次预热' },
-        initial_time: hhmmOf(events[0]?.['at']), required: true,
-      },
-      {
-        tag: 'picker_time', name: 'second_warmup',
-        placeholder: { tag: 'plain_text', content: '第二次预热' },
-        initial_time: hhmmOf(events[1]?.['at']), required: true,
-      },
-      {
-        tag: 'button', name: 'submit_adopt_schedule',
-        text: { tag: 'plain_text', content: '采用计划' },
-        type: 'primary', width: 'fill', form_action_type: 'submit',
-        behaviors: [{ type: 'callback', value: cb('adopt_schedule', { plan: record }) }],
-      },
-    ],
+    elements: formElements,
   });
   return { schema: '2.0', config: { summary: { content: '额度管家：明日计划预览' } }, body: { elements } };
 }
@@ -531,6 +544,25 @@ function scheduleTimelineElements(plan: SchedulePlan): Array<Record<string, unkn
   const prepStart = fw[0] ?? ws;
   const secondWarm = fw[1] ?? we;
   const windowCount = Math.max(1, fw.length);
+
+  if (fw.length === 1) {
+    const duration = Math.max(1, (we.getTime() - ws.getTime()) / 3600000);
+    return [
+      md(`**明天 ${hm(ws)}–${endLabel(ws, we)}：${firstLabel}**`),
+      md('当前按 **周额度** 计费，不再拆分 5 小时窗口。'),
+      row(
+        [segColumn(1, 'grey-200', '预备'), segColumn(segWeight(duration), 'blue-200', '周额度\n**按需使用**')],
+        '8px 0px 2px 0px',
+      ),
+      row(
+        [segColumn(1, null, `${hm(prepStart)}\n连通预热`), segColumn(segWeight(duration), null, `${hm(ws)}\n你开工`)],
+        '0px 0px 6px 0px',
+      ),
+      md(`重点使用区间：**${hm(ws)}–${endLabel(ws, we)}**。将创建 **1** 个开工前预热任务；预热会发起一次真实请求。`),
+      md('确认前可以调整开工前预热时间。'),
+      md(`✅ **开工前** · ${hm(prepStart)} 完成连通检查，${hm(ws)} 打开直接用。`),
+    ];
+  }
 
   const bar: Array<Record<string, unknown>> = [segColumn(1, 'grey-200', '预备')];
   const axis: Array<Record<string, unknown>> = [segColumn(1, null, `${hm(prepStart)}\n开始计时`)];
@@ -624,6 +656,10 @@ function snapshotLines(snap: UsageSnapshot | undefined): string[] {
     const rem5 = (100 - snap.fiveHourUtil).toFixed(0);
     return [`<font color='grey'>上次成功：约 ${ageText} 小时前 · 5 小时还剩 ${rem5}%</font>`];
   }
+  if (snap.sevenDayUtil != null) {
+    const rem7 = (100 - snap.sevenDayUtil).toFixed(0);
+    return [`<font color='grey'>上次成功：约 ${ageText} 小时前 · 周额度还剩 ${rem7}%</font>`];
+  }
   if (snap.monthlyUtil != null) {
     const remM = (100 - snap.monthlyUtil).toFixed(0);
     return [`<font color='grey'>上次成功：约 ${ageText} 小时前 · 月度还剩 ${remM}%</font>`];
@@ -668,7 +704,10 @@ function manualWarmupBlockReason(status: AgentStatus): string {
   const weekly = status.usage.sevenDay;
   if (weekly && weekly.utilization >= 100) return `${label}：7 天额度已耗尽，暂不可预热`;
   const five = status.usage.fiveHour;
-  if (!five) return `${label}：没有 5 小时窗口，暂不可预热`;
+  if (!five) {
+    if (weekly) return '';
+    return `${label}：只有月度额度，暂不参与预热`;
+  }
   const reset = five.resetsAt;
   if (reset) {
     const now = Date.now();

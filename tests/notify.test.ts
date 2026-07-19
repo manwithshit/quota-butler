@@ -57,6 +57,25 @@ describe('buildStatusCard', () => {
     expect(text).toContain('真正的上限');
   });
 
+  it('shows weekly-only Codex instead of reporting a missing quota window', () => {
+    const statuses: Record<string, AgentStatus> = {
+      codex: {
+        provider: 'codex',
+        state: AgentState.CONNECTED,
+        usage: {
+          provider: 'codex',
+          fiveHour: null,
+          sevenDay: { utilization: 38, resetsAt: new Date('2026-07-20T04:15:19Z'), windowSeconds: 604800 },
+        },
+      },
+    };
+    const text = md(buildStatusCard(statuses));
+    expect(text).toContain('Codex · 周额度');
+    expect(text).toContain('还剩 **62%**');
+    expect(text).toContain('没有 5 小时窗口');
+    expect(text).not.toContain('未读到额度窗口');
+  });
+
   it('token-stale does not tell a logged-in user to re-login, and shows snapshot', () => {
     const statuses: Record<string, AgentStatus> = {
       cc: { provider: 'cc', state: AgentState.TOKEN_STALE, detail: 'CC token 已过期' },
@@ -229,5 +248,22 @@ describe('buildScheduleCard', () => {
     expect(whole).toContain('second_warmup');
     expect(whole).not.toContain('更换 AI 工具');
     expect(whole).not.toContain('仅提醒');
+  });
+
+  it('weekly-only Codex schedule has one picker and no 5h/200% copy', () => {
+    const weekly: Usage = {
+      provider: 'codex',
+      fiveHour: null,
+      sevenDay: { utilization: 38, resetsAt: new Date('2026-07-20T04:15:19Z'), windowSeconds: 604800 },
+    };
+    const card = buildScheduleCard(buildPlan(planReq({ agentStrategy: 'codex' }), { codex: weekly }));
+    const text = md(card);
+    const whole = JSON.stringify(card);
+    expect(whole).toContain('first_warmup');
+    expect(whole).not.toContain('"name":"second_warmup"');
+    expect(text).toContain('周额度');
+    expect(text).toContain('1** 个开工前预热任务');
+    expect(text).not.toContain('200%');
+    expect(text).not.toContain('两个预热时间');
   });
 });

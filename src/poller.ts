@@ -53,7 +53,7 @@ export class Poller {
   }
 
   /** 在每个 provider 的主窗口重置时刻 +90s 排一个一次性复查 tick（替换旧的）。
-   *  有 5h 的 provider 仍以 5h 为主触发器；无 5h 的 provider 不主动发恢复提醒。
+   *  有 5h 的 provider 以 5h 为主触发器；仅周额度 provider 以周重置为触发器。
    *  当前没读到的 provider 也用 last-good 快照照排，避免限流/令牌过期时漏掉边界。 */
   private scheduleResetChecks(statuses: Record<string, AgentStatus>, now: Date): void {
     const st = this.state.get();
@@ -89,7 +89,7 @@ export class Poller {
     const st = this.state.get();
     let statuses: Record<string, AgentStatus>;
     try {
-      // 只读感知：带上已知档位缓存，免费档 Codex token 过期时不触发 codex exec 刷新（省月额度）。
+      // 只读感知：带上已知档位缓存，无 5h 的 Codex token 过期时不触发 codex exec 刷新。
       statuses = await detectAgents(undefined, { sensing: true, knownTiers: st.providerTiers });
     } catch (e) {
       console.error('[poller] detect 失败：', e);
@@ -117,7 +117,7 @@ export class Poller {
       this.state.recordUsageSnapshot(p, s.usage);
       recordProviderWindowSnapshots(st, p, s.usage, now);
       logWindowSnapshots(p, s.usage);
-      // 记住档位：下一拍（含进程重启后）就能在感知时认出免费档，跳过烧额度的刷新。
+      // 记住窗口档位：下一拍（含进程重启后）能认出无 5h 的 Codex，跳过烧长周期额度的刷新。
       st.providerTiers = { ...st.providerTiers, [p]: usageTier(s.usage) };
     }
     // 每天首次观测记一张"日初"快照，供日报算当日消耗。
@@ -328,6 +328,8 @@ function recordProviderWindowSnapshots(
 ): void {
   const all = state.providerWindowSnapshots ?? (state.providerWindowSnapshots = {});
   const providerSnaps = { ...(all[provider] ?? {}) };
+  if (!usage.fiveHour) delete providerSnaps.fiveHour;
+  if (!usage.sevenDay) delete providerSnaps.sevenDay;
   for (const item of windowsOfUsage(provider, usage)) {
     providerSnaps[item.name] = {
       utilization: item.usage.utilization,
@@ -401,8 +403,19 @@ function resetCheckTarget(
   provider: string,
   usage: Usage | undefined,
 ): { window: QuotaWindowName; resetAt: Date | null } | null {
-  const five = usage?.fiveHour?.resetsAt ?? parseSnapshotReset(snapshotForWindow(state, provider, 'fiveHour')?.resetAt ?? null);
+  if (usage) {
+    if (usage.fiveHour?.resetsAt) return { window: 'fiveHour', resetAt: usage.fiveHour.resetsAt };
+    if (usage.sevenDay?.resetsAt) return { window: 'sevenDay', resetAt: usage.sevenDay.resetsAt };
+    return null;
+  }
+  if (state.providerTiers?.[provider] === 'weekly-only') {
+    const seven = parseSnapshotReset(snapshotForWindow(state, provider, 'sevenDay')?.resetAt ?? null);
+    return seven ? { window: 'sevenDay', resetAt: seven } : null;
+  }
+  const five = parseSnapshotReset(snapshotForWindow(state, provider, 'fiveHour')?.resetAt ?? null);
   if (five) return { window: 'fiveHour', resetAt: five };
+  const seven = parseSnapshotReset(snapshotForWindow(state, provider, 'sevenDay')?.resetAt ?? null);
+  if (seven) return { window: 'sevenDay', resetAt: seven };
   return null;
 }
 

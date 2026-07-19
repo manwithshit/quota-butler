@@ -4,7 +4,7 @@
 import { chmodSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { ProviderTier, Usage } from './providers/index.js';
+import { usageTier, type ProviderTier, type Usage } from './providers/index.js';
 
 const STATE_PATH = join(homedir(), '.quota-butler', 'state.json');
 
@@ -85,8 +85,8 @@ export interface State {
   lastBedtimePromptDate: string | null;
   providerSnapshots: Record<string, { utilization: number; resetAt: string | null }>;
   providerWindowSnapshots: Record<string, Partial<Record<QuotaWindowName, WindowSnapshot>>>;
-  // 上次成功读到的各家档位（monthly-only=免费档 Codex / has-5h=付费档/CC）。
-  // 跨进程持久化：免费档一旦认出，后续只读感知就不再触发会烧月额度的 codex exec 刷新。
+  // 上次成功读到的各家窗口档位。
+  // 跨进程持久化：无 5h 的 Codex 一旦认出，后续只读感知就不再触发会烧长周期额度的刷新。
   providerTiers: Record<string, ProviderTier>;
   executedWarmups: string[]; // `${planId}:${agent}:${at}`，防进程重启后重复触发
   lastPlanRequest: LastPlanRequest | null; // "复用上次"用
@@ -180,6 +180,7 @@ export class StateStore {
       monthlyResetAt: usage.monthly?.resetsAt ? usage.monthly.resetsAt.toISOString() : null,
       capturedAt: new Date().toISOString(),
     };
+    this.state.providerTiers = { ...this.state.providerTiers, [provider]: usageTier(usage) };
   }
 }
 

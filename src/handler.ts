@@ -353,7 +353,10 @@ async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promis
   console.log(
     `[handler] warmup result action=${action} provider=${provider} windowKey=${markedWindowKey ?? '(none)'} marked=${markedWindowKey ? 'yes' : 'no'} saved=yes`,
   );
-  return ctx.receipt(`✅ ${provider} 已预热，新的额度窗口已开始。\n模型回复：「${reply || '(空)'}」`);
+  const outcome = st.providerTiers[provider] === 'weekly-only'
+    ? '已完成连通预热（周额度不再创建 5 小时窗口）'
+    : '已预热，新的额度窗口已开始';
+  return ctx.receipt(`✅ ${provider} ${outcome}。\n模型回复：「${reply || '(空)'}」`);
 }
 
 function requestFromPayload(payload: Record<string, unknown>, availableCount: number): PlanRequest {
@@ -450,8 +453,18 @@ function applyAdoptForm(candidate: Record<string, unknown>, formValue: unknown):
   const record = structuredClone(candidate) as Record<string, unknown>;
   const events = ([...((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])] as Array<Record<string, unknown>>)
     .map((event) => ({ ...event }));
-  if (events.length < 2) throw new Error('计划缺少两次预热时间');
+  if (events.length < 1) throw new Error('计划缺少预热时间');
   const first = normalizeHHmm(form['first_warmup'] ?? hhmmOf(events[0]?.['at']));
+  if (events.length === 1) {
+    const workStart = new Date(String(record['work_start']));
+    events[0]!['at'] = localIso(setTime(workStart, first));
+    record['events'] = events;
+    record['request'] = {
+      ...((record['request'] as Record<string, unknown>) ?? {}),
+      first_warmup: first,
+    };
+    return record;
+  }
   const second = normalizeHHmm(form['second_warmup'] ?? hhmmOf(events[1]?.['at']));
   validateWarmupTimes(first, second);
   const workStart = new Date(String(record['work_start']));
