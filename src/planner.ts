@@ -1,4 +1,5 @@
-// 确定性 V3 明日计划计算器：一次只规划一个 AI 工具，用两次预热最大化单工具窗口。
+// 确定性 V3 明日计划计算器：一次只规划一个 AI 工具。
+// 传统 5h 档用两次预热接力；仅周额度档只在开工前做一次连通预热。
 
 import type { PlanRequest } from './schedule_flow.js';
 import { normalizeHHmm } from './schedule_flow.js';
@@ -34,17 +35,23 @@ export function buildPlan(request: PlanRequest, availableUsages: Record<string, 
   const selected = selectAgents(request.agentStrategy, availableUsages);
 
   const firstAgent = selected[0]!;
+  const selectedUsage = availableUsages[firstAgent]!;
   const firstWarmup = combine(request, request.firstWarmup);
-  const secondWarmup = combine(request, request.secondWarmup);
-  const sortedWarmups = [firstWarmup, secondWarmup].sort((a, b) => a.getTime() - b.getTime());
-  if (end.getTime() <= sortedWarmups[1]!.getTime()) end = new Date(sortedWarmups[1]!.getTime() + 5 * HOUR);
-
-  const events: PlanEvent[] = [
-    { agent: firstAgent, kind: 'warmup', at: sortedWarmups[0]!, purpose: '准备第一个窗口' },
-    { agent: firstAgent, kind: 'warmup', at: sortedWarmups[1]!, purpose: '恢复后准备第二个窗口' },
-  ];
-
-  const reason = `当前计划只使用 ${AGENT_LABELS[firstAgent]}，用两次预热最大化单一工具的可用窗口。`;
+  let events: PlanEvent[];
+  let reason: string;
+  if (!selectedUsage.fiveHour && selectedUsage.sevenDay) {
+    events = [{ agent: firstAgent, kind: 'warmup', at: firstWarmup, purpose: '开工前连通预热' }];
+    reason = `${AGENT_LABELS[firstAgent]} 当前使用周额度，开工前执行一次连通预热，不再安排 5 小时窗口接力。`;
+  } else {
+    const secondWarmup = combine(request, request.secondWarmup);
+    const sortedWarmups = [firstWarmup, secondWarmup].sort((a, b) => a.getTime() - b.getTime());
+    if (end.getTime() <= sortedWarmups[1]!.getTime()) end = new Date(sortedWarmups[1]!.getTime() + 5 * HOUR);
+    events = [
+      { agent: firstAgent, kind: 'warmup', at: sortedWarmups[0]!, purpose: '准备第一个窗口' },
+      { agent: firstAgent, kind: 'warmup', at: sortedWarmups[1]!, purpose: '恢复后准备第二个窗口' },
+    ];
+    reason = `当前计划只使用 ${AGENT_LABELS[firstAgent]}，用两次预热最大化单一工具的可用窗口。`;
+  }
 
   events.sort((a, b) => a.at.getTime() - b.at.getTime() || a.agent.localeCompare(b.agent));
   return { agents: selected, workStart: start, workEnd: end, events, reason, request, planVersion: 3 };
@@ -83,7 +90,7 @@ function rankAgents(agents: string[], usages: Record<string, Usage>): string[] {
     const wa = weeklyRemaining(usages[a]!);
     const wb = weeklyRemaining(usages[b]!);
     if (wa !== wb) return wb - wa;
-    // 规划候选必有 5h 窗口（usableForPlanning 已保证），仍做空值兜底。
+    // 仅周额度档没有 5h 窗口，平手时排在有短窗口可接力的工具之后。
     const fa = usages[a]!.fiveHour ? 100 - usages[a]!.fiveHour!.utilization : 0;
     const fb = usages[b]!.fiveHour ? 100 - usages[b]!.fiveHour!.utilization : 0;
     if (fa !== fb) return fb - fa;

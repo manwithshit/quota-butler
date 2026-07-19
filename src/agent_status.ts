@@ -46,15 +46,14 @@ export function isSchedulable(s: AgentStatus): boolean {
 const PLANNING_MIN_WEEKLY_REMAINING = 10;
 
 /** 是否值得围绕它排计划：
- *  1) 必须有 5h 窗口——预热/双窗口/接力都靠"开 5h 窗口"，免费档 Codex 只有月度窗口，
- *     无 5h 可换挡、且预热会烧月度额度，故不参与规划（仍可在额度卡里查看）。
- *  2) 周额度还有余量（周见底=排了也用不了）。 */
+ *  1) 必须有可调度窗口：传统 5h，或新版 Codex 的仅周额度；只有月额度仍不参与。
+ *  2) 周额度还有余量（周见底=排了也用不了），或会在计划开工前刷新。 */
 export function usableForPlanning(usage: Usage): boolean {
   return usableForPlanningAt(usage, new Date());
 }
 
 export function usableForPlanningAt(usage: Usage, planningAt: Date): boolean {
-  if (!usage.fiveHour) return false;
+  if (!usage.fiveHour && !usage.sevenDay) return false;
   if (usage.sevenDay && 100 - usage.sevenDay.utilization < PLANNING_MIN_WEEKLY_REMAINING) {
     const reset = usage.sevenDay.resetsAt;
     if (!reset || reset.getTime() > planningAt.getTime()) return false;
@@ -81,13 +80,13 @@ export function planningUsageForStatus(
 }
 
 function usageFromSnapshot(provider: string, snapshot: PlanningUsageSnapshot | undefined): Usage | null {
-  if (!snapshot || snapshot.fiveHourUtil == null) return null;
+  if (!snapshot || (snapshot.fiveHourUtil == null && snapshot.sevenDayUtil == null)) return null;
   const capturedAt = new Date(snapshot.capturedAt).getTime();
   if (Number.isNaN(capturedAt) || Math.max(0, Date.now() - capturedAt) > PLANNING_SNAPSHOT_MAX_AGE_MS) return null;
   const hasSevenDayReset = Object.prototype.hasOwnProperty.call(snapshot, 'sevenDayResetAt');
   return {
     provider,
-    fiveHour: {
+    fiveHour: snapshot.fiveHourUtil == null ? null : {
       utilization: snapshot.fiveHourUtil,
       resetsAt: parseSnapshotDate(snapshot.fiveHourResetAt),
       windowSeconds: 5 * 3600,
@@ -115,8 +114,8 @@ function parseSnapshotDate(value: string | null | undefined): Date | null {
 
 /** detectAgents 调用语境。
  *  sensing：本轮是只读感知（15 分钟轮询），不应有任何烧额度的副作用。
- *  knownTiers：上次成功读到的各家档位缓存——感知时若认出免费档 Codex（monthly-only），
- *              便禁止其 401 自动刷新（codex exec 会烧月额度）。 */
+ *  knownTiers：上次成功读到的各家档位缓存——感知时若认出无 5h 的 Codex，
+ *              便禁止其 401 自动刷新（codex exec 会烧长周期额度）。 */
 export interface DetectOptions {
   sensing?: boolean;
   knownTiers?: Record<string, ProviderTier>;
@@ -170,8 +169,9 @@ export async function detectAgents(
       continue;
     }
     try {
-      // 感知路径：仅当已知是免费档（monthly-only）才禁刷新——付费档/档位未知仍允许刷新（学习档位）。
-      const allowRefresh = !opts.sensing || opts.knownTiers?.[provider] !== 'monthly-only';
+      // 感知路径：已知无 5h 窗口时禁刷新；档位未知仍允许一次刷新以学习档位。
+      const knownTier = opts.knownTiers?.[provider];
+      const allowRefresh = !opts.sensing || knownTier == null || knownTier === 'has-5h';
       const usage = await getProvider(provider).readUsage({ allowRefresh });
       usageCache.set(provider, { usage, at: Date.now() });
       rateLimitStrikes.delete(provider); // 读通了，清零计数

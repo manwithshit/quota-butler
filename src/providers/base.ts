@@ -39,7 +39,8 @@ export interface WindowUsage {
 /** 一次感知的统一结果。
  *  窗口按真实时长归位：5h / 7天 / 月度。
  *  - CC、付费档 Codex：有 fiveHour（+ sevenDay）。
- *  - 免费档 Codex：只有 monthly（fiveHour=null）——无 5h 窗口可预热/接力。 */
+ *  - 新版 Codex：可能只有 sevenDay（fiveHour=null）。
+ *  - 免费档 Codex：只有 monthly（fiveHour=null）。 */
 export interface Usage {
   provider: string; // "cc" | "codex"
   fiveHour: WindowUsage | null;
@@ -60,13 +61,15 @@ export interface Provider {
   warmup(prompt: string): Promise<string>;
 }
 
-/** 账户档位：免费档 Codex 只有月度窗口（无 5h），付费档/CC 有 5h 窗口。
- *  缓存它，是为了"在成功读过一次后"就能在只读感知时认出免费档，跳过烧额度的刷新。 */
-export type ProviderTier = 'monthly-only' | 'has-5h';
+/** 账户窗口档位。缓存它，是为了在后台只读感知时认出无 5h 的 Codex，
+ *  跳过可能消耗长周期额度的 token 刷新。 */
+export type ProviderTier = 'monthly-only' | 'weekly-only' | 'has-5h';
 
-/** 由一次成功的 usage 推断档位：有 5h 窗口=付费档/CC，否则=免费档（仅月度）。 */
+/** 由一次成功的 usage 推断档位。 */
 export function usageTier(usage: Usage): ProviderTier {
-  return usage.fiveHour ? 'has-5h' : 'monthly-only';
+  if (usage.fiveHour) return 'has-5h';
+  if (usage.sevenDay) return 'weekly-only';
+  return 'monthly-only';
 }
 
 /** GET JSON，返回 status + 原始 body；只在网络/超时失败时抛 ProviderError。

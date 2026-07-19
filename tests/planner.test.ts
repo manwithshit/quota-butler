@@ -7,6 +7,14 @@ function usage(util: number, resetsAt: Date | null = null): Usage {
   return { provider: 'x', fiveHour: { utilization: util, resetsAt, windowSeconds: 18000 } };
 }
 
+function weeklyUsage(util: number): Usage {
+  return {
+    provider: 'codex',
+    fiveHour: null,
+    sevenDay: { utilization: util, resetsAt: new Date('2026-06-22T00:00:00Z'), windowSeconds: 604800 },
+  };
+}
+
 function req(partial: Partial<PlanRequest>): PlanRequest {
   return {
     targetDate: '2026-06-20',
@@ -50,6 +58,16 @@ describe('buildPlan', () => {
     });
     expect(plan.agents).toEqual(['codex']);
     expect(plan.reason).toContain('只使用 Codex');
+  });
+
+  it('weekly-only Codex uses one connectivity warmup instead of two fake 5h windows', () => {
+    const plan = buildPlan(req({ agentStrategy: 'codex' }), { codex: weeklyUsage(38) });
+    expect(plan.agents).toEqual(['codex']);
+    expect(plan.events.map((e) => [e.agent, hm(e.at), e.purpose])).toEqual([
+      ['codex', '06:30', '开工前连通预热'],
+    ]);
+    expect(plan.reason).toContain('周额度');
+    expect(plan.reason).toContain('不再安排 5 小时窗口接力');
   });
 
   it('both strategy is rejected because one plan only uses one agent', () => {

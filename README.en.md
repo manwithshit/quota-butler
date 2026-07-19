@@ -4,13 +4,13 @@
 
 Quota Butler is a local macOS helper for Claude Code and Codex users. It talks to you through a private Feishu/Lark bot chat, but it does not use an LLM for chat completion. The app only runs deterministic quota checks, status reminders, and warm-up scheduling.
 
-Its goal is to help you make better use of the quota you already have: see the 5-hour and 7-day windows, know when they recover, plan tomorrow's heavy usage window, and let your Mac warm up the right tool at the right time.
+Its goal is to help you make better use of the quota you already have: see 5-hour, 7-day, or monthly windows, know when they recover, plan tomorrow's heavy usage window, and let your Mac warm up the right tool at the right time.
 
 ## Preview
 
 ### Quota Status
 
-Quota Butler shows Claude Code and Codex side by side: 5-hour window, 7-day or monthly quota, remaining percentage, and refresh time. The status summary prioritizes the long-term cap, so a depleted 7-day quota is shown as the real limit even when the 5-hour window looks full.
+Quota Butler shows Claude Code and Codex side by side: 5-hour window, 7-day or monthly quota, remaining percentage, and refresh time. It supports the newer weekly-only Codex quota without misclassifying it as a free monthly tier. The status summary prioritizes the long-term cap, so a depleted 7-day quota is shown as the real limit even when the 5-hour window looks full.
 
 ![Quota status](docs/images/quota-status.png)
 
@@ -22,7 +22,7 @@ Send `菜单` or `menu` to open the command card. From there you can query quota
 
 ### Tomorrow Plan
 
-Pick one start time, and Quota Butler selects one available AI tool based on the latest quota state. It generates two warm-up points by default, aiming to make one tool cover around 7.5 hours of focused work, roughly equivalent to two 5-hour windows. You can still adjust the two warm-up times before adopting the plan.
+Pick one start time, and Quota Butler selects one available AI tool based on the latest quota state. Tools with a 5-hour window get two warm-up points; weekly-only Codex gets one connectivity warm-up before work instead of a fake 5-hour relay. You can adjust the warm-up time before adopting the plan.
 
 ![Tomorrow plan](docs/images/tomorrow-plan.png)
 

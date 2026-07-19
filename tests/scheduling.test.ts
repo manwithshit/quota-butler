@@ -5,6 +5,7 @@ import { buildCurrentPlansCard, buildManualWarmupCard } from '../src/notify.js';
 import { AgentState, type AgentStatus } from '../src/agent_status.js';
 import { buildPlan } from '../src/planner.js';
 import type { Usage } from '../src/providers/index.js';
+import { usageTier } from '../src/providers/index.js';
 import type { PlanRequest } from '../src/schedule_flow.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +41,16 @@ describe('usableForPlanning', () => {
       monthly: { utilization: 20, resetsAt: null, windowSeconds: 2592000 },
     };
     expect(usableForPlanning(freeCodex)).toBe(false);
+  });
+
+  it('includes weekly-only Codex and classifies it separately from monthly-only', () => {
+    const weeklyCodex: Usage = {
+      provider: 'codex',
+      fiveHour: null,
+      sevenDay: { utilization: 38, resetsAt: new Date('2026-07-20T04:15:19Z'), windowSeconds: 604800 },
+    };
+    expect(usageTier(weeklyCodex)).toBe('weekly-only');
+    expect(usableForPlanning(weeklyCodex)).toBe(true);
   });
 
   it('allows a depleted weekly quota when it resets before the planned work time', () => {
@@ -94,6 +105,30 @@ describe('usableForPlanning', () => {
 
       expect(usage?.provider).toBe('cc');
       expect(usage?.sevenDay?.utilization).toBe(20);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconstructs weekly-only Codex from a recent snapshot', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T10:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'codex', state: AgentState.UNAVAILABLE, detail: '只读令牌已过期' },
+        {
+          fiveHourUtil: null,
+          fiveHourResetAt: null,
+          sevenDayUtil: 38,
+          sevenDayResetAt: '2026-07-20T04:15:19.000Z',
+          capturedAt: '2026-07-19T08:00:00.000Z',
+        },
+        new Date('2026-07-20T09:00:00'),
+      );
+
+      expect(usage?.fiveHour).toBeNull();
+      expect(usage?.sevenDay?.utilization).toBe(38);
+      expect(usableForPlanning(usage!)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
