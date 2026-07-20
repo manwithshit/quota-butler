@@ -38,19 +38,13 @@ The public preview may still contain edge cases and is not recommended for sched
 
 Quota Butler shows Claude Code and Codex side by side: 5-hour window, 7-day or monthly quota, remaining percentage, and refresh time. It supports the newer weekly-only Codex quota without misclassifying it as a free monthly tier. The status summary prioritizes the long-term cap, so a depleted 7-day quota is shown as the real limit even when the 5-hour window looks full.
 
-![Quota status](docs/images/quota-status.png)
-
 ### Menu And Current Plan
 
 Send `菜单` or `menu` to open the command card. From there you can query quota, view the current plan, trigger an immediate warm-up, or set tomorrow's plan. Current plans are split into today and tomorrow, with clear states for executed and pending warm-ups.
 
-![Menu and current plan](docs/images/menu-and-current-plan.png)
-
 ### Tomorrow Plan
 
-Pick one start time, and Quota Butler selects one available AI tool by default; you can also explicitly choose both tools. A primary tool with a 5-hour window gets two warm-up points, while weekly-only Codex gets one connectivity warm-up instead of a fake 5-hour window. A dual-agent plan keeps both tools in one plan so they are adopted and cancelled together. Before adopting it, you can adjust the primary tool's warm-up times or switch tools.
-
-![Tomorrow plan](docs/images/tomorrow-plan.png)
+Pick one start time, and Quota Butler prioritizes Claude Code with two 5-hour warm-up points. Weekly-only Codex needs no daily warm-up while its current cycle is active. An adopted plan offers “Append Codex weekly activation” only when the known weekly reset occurs before that plan ends; the scheduled request then sends the first message that starts the new cycle. If Claude Code is unavailable, the planner falls back according to the Codex weekly-cycle state.
 
 ## Requirements
 
@@ -123,6 +117,12 @@ Claude Code / Codex auth files
 ```
 
 Keep secrets local. Feishu/Lark app credentials, access tokens, open IDs, chat IDs, local state, and Claude Code / Codex auth files should never be committed to this repository.
+
+## Public Preview Limitations
+
+- A sleeping or powered-off Mac can miss scheduled actions. Clearly stale actions are skipped after wake and reported to the owner.
+- Codex weekly activation uses the latest reset timestamp known when the plan is created. It does not yet re-query at execution time to detect a cycle that the user started manually.
+- The preview has passed the automated suite and maintainer device checks, but broader account, network, and sleep-state coverage is still in progress.
 
 ## Development
 

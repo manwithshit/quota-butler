@@ -51,7 +51,7 @@ describe('buildStatusCard', () => {
     const statuses: Record<string, AgentStatus> = {
       codex: { provider: 'codex', state: AgentState.CONNECTED, usage: usage(1, 99) },
     };
-    const text = md(buildStatusCard(statuses));
+    const text = md(buildStatusCard(statuses, {}, new Date('2026-07-20T00:00:00Z')));
     expect(text).toContain('还剩 **99%**'); // 5h
     expect(text).toContain('还剩 **1%**'); // 周
     expect(text).toContain('7 天额度仅剩');
@@ -70,7 +70,7 @@ describe('buildStatusCard', () => {
         },
       },
     };
-    const text = md(buildStatusCard(statuses));
+    const text = md(buildStatusCard(statuses, {}, new Date('2026-07-20T00:00:00Z')));
     expect(text).toContain('Codex · 周额度');
     expect(text).toContain('还剩 **62%**');
     expect(text).toContain('没有 5 小时窗口');

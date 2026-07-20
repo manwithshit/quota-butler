@@ -1,97 +1,128 @@
-# DevelopV1.4 双 Agent + Codex 周额度 Dogfood 方案
+# V1.4 Public Preview 测试方案
 
-## 1. 历史结论
+V1.4 采用公开测试方式：维护者继续在自己的 Mac 上 dogfood，同时邀请 GitHub 用户安装 beta tag，在更多账户、网络与睡眠环境中共同验证。
 
-- `d346b34 fix: harden quota windows and scheduled warmups` 已实现双 Agent 计划：
-  - `agent_strategy=both`
-  - 主 Agent 两次预热
-  - 接力 Agent“提前垫窗 + 接力刷新”
-  - 每个 Agent 的预热任务独立安装与执行
-- `223a6d5 feat: simplify single-agent planning flow` 主动删除了 `both` 入口和接力逻辑，将产品收敛为单 Agent。
-- `1ab5ed1 migrate quota butler to ts npx app` 迁移到 TypeScript 后保留了部分手动双 Agent 辅助代码，但正式路由一直返回“未开放”。
-- 因此，历史上确实提交过双 Agent 代码，但它不是独立的 V1.3/V1.4 分支，而是主干历史中后来被产品决策删除的一段实现。
+## 1. 发布通道
+
+| 通道 | 安装目标 | 适用人群 |
+|---|---|---|
+| Stable | `main` / `v0.1.0` | 希望长期稳定运行的用户 |
+| V1.4 Public Preview | `v1.4.0-beta.1` | 愿意反馈边界问题的测试用户 |
+
+稳定版：
+
+```bash
+npx github:manwithshit/quota-butler run
+```
+
+V1.4 Public Preview：
+
+```bash
+npx github:manwithshit/quota-butler#v1.4.0-beta.1 run
+```
 
 ## 2. V1.4 行为定义
 
-### 默认行为
+### 明日计划
 
-- `auto` 仍然只选择一个 Agent，避免升级后默认计划突然增加真实请求。
-- 只有用户明确选择“两个都用”时，才生成双 Agent 计划。
-- 每个日期仍只保存一个计划；双 Agent 事件放在同一个计划中，不建立两个互相覆盖的日期计划。
+- 默认推荐 Claude Code，因为它仍有每日可预热的 5 小时窗口。
+- Claude Code 计划保留两次预热，用于准备两段 5 小时窗口。
+- 不再提供“两个都用”的前置选择。
+- 采用 Claude Code 计划后，只有 Codex 已知周重置点严格早于计划结束时，当前计划才显示“追加 Codex 新周期预热”。
+- 同一个 Codex 周重置点最多追加一次，重复点击不会创建重复任务。
 
-### 额度形态矩阵
+### Codex 仅周额度
 
-| 主工具 / 接力工具 | 计划行为 |
-|---|---|
-| 5h / 5h | 恢复历史逻辑：主工具两次预热；接力工具提前垫窗并在接力点刷新 |
-| 5h / weekly-only | 主工具两次预热；Codex 只在接力前做一次连通预热 |
-| weekly-only 单工具 | 开工前一次连通预热，不生成第二个 5h 节点 |
-| monthly-only 单工具 | 可查询额度，但不参与计划或预热 |
+- 当前周周期进行中：正常使用，不做每日预热。
+- 周额度耗尽且未到重置点：显示“周额度已耗尽，等待下一个周期刷新。”
+- 已到重置点但尚未发送新消息：显示“新一周额度已就绪，发送任意消息开始计时。”
+- 周重置发生在计划开始前：在开工前 10 分钟激活，但不会早于重置点后 90 秒。
+- 周重置发生在工作时段内：在重置点后 90 秒激活。
+- 没有可靠重置时间，或重置时间不早于计划结束：不自动追加。
+- Claude Code 不可用时，Codex 可以作为单工具兜底；当前周期活跃时无需定时任务，新周期在计划内到来时只创建一次周期激活。
 
-### 不变量
+### 内部语义
 
-- 传统 5h + 周额度账户的原有解析、恢复提醒、两次预热和去重逻辑保持不变。
-- weekly-only 不创建、标记或展示虚假的 5h 窗口。
-- 后台感知遇到 weekly-only / monthly-only 时不执行 `codex exec` 刷新，避免消耗长周期额度。
-- 周额度耗尽时不参与计划；若重置发生在计划开工前，则允许进入候选。
-- 双 Agent 的接力事件不能被“调整主工具预热时间”的表单误改。
+- Claude Code 的 5 小时操作使用 `warmup` 事件。
+- Codex 的新周期操作使用独立的 `weekly-activation` 计划事件和 `weekly_activation` 日志事件。
+- Codex 周期激活成功后不会标记或制造 5 小时窗口。
+- 后台感知已知 weekly-only / monthly-only Codex 时，不通过 `codex exec` 刷新凭证，避免无意消耗长周期额度。
 
-## 3. 自动化测试方案
+## 3. 自动化验证
 
-### Provider 与档位
+V1.4 发布前必须通过：
 
-- Codex 返回 `5h + weekly`、`weekly-only`、`monthly-only` 三种响应的解析。
-- `usageTier` 三档分类。
-- nullable `fiveHour` 快照的持久化与旧 5h 快照兼容。
-- weekly-only / monthly-only 后台刷新闸门；主动查询仍允许刷新。
+```bash
+npm run typecheck
+npx vitest run --api.host=127.0.0.1
+npm run build
+node dist/cli.mjs selftest
+git diff --check
+```
 
-### 规划器
+核心覆盖：
 
-- 单 CC 5h 计划的两个时间点保持不变。
-- 单 Codex weekly-only 只生成一次预热。
-- 显式 `both` 在 5h / 5h 下恢复四事件接力。
-- 显式 `both` 在 5h / weekly-only 下生成三事件，不伪造 Codex 5h。
-- 只有一个 Agent 可规划时拒绝 `both`。
-- `auto` 保持单 Agent。
+- Codex `5h + weekly`、`weekly-only`、`monthly-only` 三种响应解析。
+- 周周期 active / exhausted / ready 三态文案。
+- Claude Code 默认选择与两次预热回归。
+- Codex 重置在计划前、计划中、计划结束点、跨午夜和未知重置时间的计算。
+- 追加按钮显隐、重复点击幂等和旧双 Agent 计划兼容。
+- `weekly-activation` 独立调度、回执、日志与恢复提醒去重。
+- 守护重启后重新布置计划，取消后撤销剩余节点。
+- 安静时段、状态持久化、网络代理和 5 小时恢复逻辑不回归。
 
-### 卡片与采用
+## 4. 公开测试清单
 
-- 双 Agent 都可规划时显示“两个都用”；只有一个可规划时隐藏。
-- 计划预览重新提供“选择 / 更换 AI 工具”入口。
-- 混合双 Agent 卡显示三项任务，但表单只编辑主工具的两个预热时间。
-- 采用计划后保存两个 Agent，并给三个事件独立布置定时器。
-- 修改主工具时间不能覆盖 Codex 接力事件。
+建议测试者重点选择其中 2–3 项，不必为了覆盖全部场景消耗额外额度：
 
-### 恢复与调度
+1. 查询额度，确认 weekly-only Codex 不显示虚假的 5 小时窗口。
+2. 设置明日计划，确认默认推荐 Claude Code 且有两个预热节点。
+3. 查看计划，确认 Codex 重置不在计划内时没有追加入口。
+4. 取消计划后再次设置，确认旧定时器不会执行。
+5. 建计划后重启额度管家，确认计划仍在且节点只执行一次。
+6. 在真实 Codex 周重置点前后观察状态与恢复提醒。
+7. 新周期就绪后追加 Codex 激活，重复点击确认只追加一次。
+8. 激活执行后查询额度，确认新周周期开始且没有生成 5 小时窗口。
+9. 观察晚间日报是否把 Claude Code 预热与 Codex 周期激活分开统计。
 
-- 5h 恢复提醒、容差去重、预热后抑制重复提醒保持通过。
-- weekly-only 以周重置点为复查触发器。
-- monthly-only 不发送恢复提醒。
-- 双 Agent 所有事件独立 arm，重启后可按同一计划恢复。
+## 5. 已知限制
 
-## 4. 一周 Dogfood 清单
+- Mac 睡眠或关机可能错过定时节点；明显过时的节点会在恢复后跳过并发送回执。
+- Codex 新周期激活使用计划创建时最后读到的重置点，执行前暂不重新查询用户是否已经手动开启周期。
+- “再次设置”仍要求先取消同日期计划；追加 Codex 周期激活不需要取消主计划。
+- 主动查询 Codex 额度在凭证失效时可能需要刷新；后台只读感知会尊重已知档位并避免 weekly-only 的模型刷新。
 
-1. 每天查询一次额度，确认 Codex 只显示周额度且剩余百分比正确。
-2. 建立一次 Claude Code 单工具计划，确认仍为两个 5h 预热节点。
-3. 建立一次 Codex 单工具计划，确认只有一个连通预热节点。
-4. 建立一次“两个都用”计划，确认当前真实组合为 Claude Code 两次 + Codex 一次。
-5. 查看当前计划，确认两个 Agent 与每个事件状态都可见。
-6. 至少让一个双 Agent 计划真实跑到预热时间，核对三个回执、去重和重启恢复。
-7. 在 Codex 周额度刷新前后各查询一次，确认只收到周额度恢复提醒。
-8. 取消一次尚未执行完的双 Agent 计划，确认所有剩余定时器一起撤销。
+## 6. 反馈要求
 
-## 5. 已知边界
+通过 GitHub 的 “V1.4 Public Preview 反馈”模板提交：
 
-- “查看计划后直接再次设定”仍未实现；当前需要先取消同日期计划。
-- 历史双 Agent 实现也是“一个日期的一张双 Agent 计划”，不是同日期两张独立计划。
-- Dogfood 若发现双 Agent 体验不稳定，可直接回退到 `DevelopV1.3` 的 `a03a4b4`；V1.3 不包含双 Agent 恢复逻辑。
+- beta 版本号；
+- macOS、Mac 型号和 Node.js 版本；
+- Codex 额度形态；
+- 操作时间、计划时间与复现步骤；
+- 飞书截图；
+- 脱敏后的 `~/.quota-butler/logs/daemon.log` 相关片段。
 
-## 6. 交付前验证结果
+不得提交 token、飞书应用凭证、open_id、chat_id 或 Claude Code / Codex 登录文件。
 
-- `npm run typecheck`：通过。
-- Vitest：13 个测试文件、113 条测试全部通过。
-- `npm run build`：通过。
-- `git diff --check`：通过。
-- 本机真实只读自检：Claude Code 与 Codex 均为 connected。
-- 本机真实档位：Claude Code 为 `has-5h`，Codex 为 `weekly-only`。
-- 真实配置双 Agent 干跑：按本地时间生成 Claude Code 06:30、11:31 两个预热节点，以及 Codex 13:50 一个接力连通节点；未落盘、未执行预热。
+## 7. 正式版门槛
+
+满足以下条件后，将 V1.4 squash merge 到 `main` 并发布 `v1.4.0`：
+
+- 连续一周没有重复预热、错误追加或计划丢失；
+- 至少一次真实 Claude Code 定时预热通过；
+- 至少一次守护进程重启恢复通过；
+- 至少一次真实 Codex 周周期激活通过；
+- 自动化验证全部通过；
+- 中英文 README、截图、Release Notes 与实际行为一致；
+- 没有未说明的 P0/P1 级公开测试问题。
+
+## 8. Beta 1 发布基线
+
+- 分支：`DevelopV1.4`
+- 核心实现提交：`aa43eab feat: align planning with Codex weekly activation`
+- 类型检查：通过
+- Vitest：14 个测试文件、122 条测试通过
+- 构建：通过
+- 本机真实自检：Claude Code 与 Codex 均为 connected
+- 本机真实档位：Claude Code 为 `has-5h`，Codex 为 `weekly-only`

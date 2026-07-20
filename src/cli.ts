@@ -5,7 +5,7 @@ const program = new Command();
 program
   .name('quota-butler')
   .description('飞书额度管家：看得见 Claude Code / Codex 额度，恢复时提醒，明日重度使用前自动预热。')
-  .version('0.1.0');
+  .version('1.4.0-beta.1');
 
 program
   .command('run')
