@@ -190,6 +190,21 @@ export class Poller {
         }
         continue;
       }
+      // 仅周额度的 Codex 到重置点后不会自行翻篇；即使 utilization/resetsAt 还没变化，
+      // 也应通知“新周期已就绪”，由第一条消息真正开启计时。
+      if (
+        longWindow === 'sevenDay' &&
+        st.providerTiers?.[provider] === 'weekly-only' &&
+        longBefore &&
+        weeklyBoundaryReached(longBefore, now)
+      ) {
+        const resetAt = parseSnapshotReset(longBefore.resetAt)!;
+        const windowKey = recoveryWindowKey(provider, longWindow, resetAt);
+        if (!sameRecoveryWindowKey(notified[notifiedKey(provider, longWindow)], provider, longWindow, resetAt)) {
+          results.push({ provider, window: longWindow, windowKey });
+        }
+        continue;
+      }
       const before = snapshotForWindow(st, provider, 'fiveHour');
       const current = usage.fiveHour;
       if (!before || !current || !hasRecoveredWindow(before, current, now, 'fiveHour')) continue;
@@ -242,7 +257,14 @@ export class Poller {
         continue;
       }
       try {
-        await this.sendCard(buildRecoveryCard(head.provider, head.windowKey, window));
+        await this.sendCard(
+          buildRecoveryCard(
+            head.provider,
+            head.windowKey,
+            window,
+            window === 'sevenDay' && st.providerTiers?.[head.provider] === 'weekly-only',
+          ),
+        );
       } catch (e) {
         console.error(
           `[poller] recovery-send provider=${head.provider} window=${window} windowKey=${head.windowKey} sent=no error=${safeErrorSummary(e)}`,
@@ -390,6 +412,13 @@ function hasRecoveredWindow(
   const drop = before.utilization - current.utilization;
   const resetMoved = current.resetsAt ? Math.abs(current.resetsAt.getTime() - resetAt.getTime()) > WINDOW_MATCH_TOLERANCE_MS : false;
   return before.utilization > current.utilization && (current.utilization <= 5 || drop >= 50 || resetMoved);
+}
+
+function weeklyBoundaryReached(before: WindowSnapshot, now: Date): boolean {
+  const resetAt = parseSnapshotReset(before.resetAt);
+  if (!resetAt) return false;
+  const age = now.getTime() - resetAt.getTime();
+  return age >= 0 && age <= LONG_WINDOW_RECOVERY_FRESHNESS_MS;
 }
 
 function parseSnapshotReset(value: string | null): Date | null {

@@ -54,7 +54,7 @@ export function markFiveHourWindowWarmed(state: State, provider: string, now = n
 export function markKnownRecoveryWindowWarmed(state: State, provider: string, windowKey: string): void {
   state.lastWarmedWindows = { ...(state.lastWarmedWindows ?? {}), [provider]: windowKey };
   const parsed = parseWindowKey(provider, windowKey);
-  if (parsed?.window === 'fiveHour') removePendingRecoveryForWarmedWindow(state, provider, parsed.resetAt);
+  if (parsed) removePendingRecoveryForWarmedWindow(state, provider, parsed.window, parsed.resetAt);
 }
 
 export function warmedFiveHourWindowMatches(state: State, provider: string, resetAt: Date): boolean {
@@ -65,14 +65,19 @@ export function warmedFiveHourWindowMatches(state: State, provider: string, rese
   );
 }
 
-function removePendingRecoveryForWarmedWindow(state: State, provider: string, resetAt: Date): void {
+function removePendingRecoveryForWarmedWindow(
+  state: State,
+  provider: string,
+  targetWindow: QuotaWindowName,
+  resetAt: Date,
+): void {
   state.pendingNotifications = (state.pendingNotifications ?? []).filter((item) => {
     if (item.provider !== provider) return true;
     const window = item.window ?? windowFromKey(item.windowKey);
-    if (window !== 'fiveHour') return true;
+    if (window !== targetWindow) return true;
     return !(
-      sameRecoveryWindowKey(item.windowKey, provider, 'fiveHour', resetAt) ||
-      sameLegacyRecoveryWindowKey(item.windowKey, provider, resetAt)
+      sameRecoveryWindowKey(item.windowKey, provider, targetWindow, resetAt) ||
+      (targetWindow === 'fiveHour' && sameLegacyRecoveryWindowKey(item.windowKey, provider, resetAt))
     );
   });
   const pending = state.pendingRecovery as
@@ -81,10 +86,10 @@ function removePendingRecoveryForWarmedWindow(state: State, provider: string, re
   if (!pending || pending.provider !== provider || !pending.windowKey) return;
   const window = pending.window ?? windowFromKey(pending.windowKey);
   if (
-    window === 'fiveHour' &&
+    window === targetWindow &&
     (
-      sameRecoveryWindowKey(pending.windowKey, provider, 'fiveHour', resetAt) ||
-      sameLegacyRecoveryWindowKey(pending.windowKey, provider, resetAt)
+      sameRecoveryWindowKey(pending.windowKey, provider, targetWindow, resetAt) ||
+      (targetWindow === 'fiveHour' && sameLegacyRecoveryWindowKey(pending.windowKey, provider, resetAt))
     )
   ) {
     state.pendingRecovery = null;

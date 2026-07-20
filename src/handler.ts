@@ -31,6 +31,7 @@ import type { Usage } from './providers/index.js';
 import { markFiveHourWindowWarmed, markKnownRecoveryWindowWarmed } from './recovery_window.js';
 import { WARMUP_PROMPT, type WarmupScheduler } from './scheduler.js';
 import { endWarmup, tryBeginWarmup } from './warmup_lock.js';
+import { weeklyActivationFromSnapshot, type WeeklyActivationOption } from './weekly_activation.js';
 
 export interface HandlerCtx {
   state: StateStore;
@@ -85,7 +86,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
     case 'schedule_intent': {
       const target = targetDate(payload);
       const plans = activePlanIndex(st);
-      if (plans[target]) return ctx.send(buildCurrentPlansCard(plansForDisplay(plans, st.executedWarmups)));
+      if (plans[target]) return ctx.send(currentPlansCard(plans, st));
       return ctx.send(buildTimeModeCard(target, st.lastPlanRequest));
     }
 
@@ -108,8 +109,11 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
     case 'view_schedule': {
       const plans = activePlanIndex(st);
       if (Object.keys(plans).length === 0) return ctx.receipt('当前没有生效计划');
-      return ctx.send(buildCurrentPlansCard(plansForDisplay(plans, st.executedWarmups)));
+      return ctx.send(currentPlansCard(plans, st));
     }
+
+    case 'append_codex_weekly_activation':
+      return appendCodexWeeklyActivation(payload, ctx);
 
     case 'cancel_schedule': {
       const target = String(payload['target_date'] ?? '');
@@ -118,7 +122,7 @@ export async function handleAction(payload: Record<string, unknown>, ctx: Handle
       let removed = 0;
       for (const day of targets) {
         const plan = plans[day];
-        if (!plan || !hasPendingWarmup(plan, st.executedWarmups)) continue;
+        if (!plan || !hasPendingPlan(plan)) continue;
         delete plans[day];
         removed += 1;
       }
@@ -280,11 +284,11 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
       const plans = activePlanIndex(st);
       if (target && plans[target]) {
         await ctx.receipt(`${target} 已有计划，请先取消后再重新设置`);
-      return ctx.send(buildCurrentPlansCard(plansForDisplay(plans, st.executedWarmups)));
+      return ctx.send(currentPlansCard(plans, st));
     }
     record = validatePlanRecord(adjusted);
-    if (!hasFutureWarmup(record, new Date())) {
-      return ctx.receipt('❌ 该计划的预热时间已过，请重新生成计划');
+    if (!hasFuturePlanAction(record, new Date())) {
+      return ctx.receipt('❌ 该计划的执行时间已过，请重新生成计划');
     }
   } catch (e) {
     return ctx.receipt(`❌ 计划不可采用：${(e as Error).message}`);
@@ -292,7 +296,9 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
   const statuses = await detectAgents(record.agents);
   for (const [provider, s] of Object.entries(statuses)) if (s.usage) ctx.state.recordUsageSnapshot(provider, s.usage);
   ctx.state.save();
-  const planningAt = new Date(record.work_start);
+  const planningAt = record.events.some((event) => event.kind === 'weekly-activation')
+    ? new Date(record.work_end)
+    : new Date(record.work_start);
   const usages = collectPlanningUsages(statuses, ctx.state.get().usageSnapshots, planningAt);
   const unavailable = record.agents.filter(
     (p) => !statuses[p] || !usages[p],
@@ -315,10 +321,12 @@ async function adoptSchedule(payload: Record<string, unknown>, ctx: HandlerCtx):
   };
   ctx.state.save();
   const result = ctx.scheduler?.armPlans(Object.values(st.plansByDate));
-  const armed = result?.armed ?? countFutureWarmups(record, new Date());
+  const armed = result?.armed ?? countFuturePlanActions(record, new Date());
   const skipped = result?.skipped ?? Math.max(0, record.events.length - armed);
   const skipText = skipped > 0 ? `，跳过 ${skipped} 个过期/已执行任务` : '';
-  return ctx.receipt(`✅ 已采用计划，已布置 ${armed} 个预热任务${skipText}`);
+  await ctx.receipt(`✅ 已采用计划，已布置 ${armed} 个自动任务${skipText}`);
+  const appendOption = appendOptionForPlan(record as unknown as Record<string, unknown>, st.usageSnapshots.codex);
+  if (appendOption) return ctx.send(buildActivePlanCard(record as unknown as Record<string, unknown>, appendOption));
 }
 
 async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promise<void> {
@@ -354,7 +362,7 @@ async function warmup(payload: Record<string, unknown>, ctx: HandlerCtx): Promis
     `[handler] warmup result action=${action} provider=${provider} windowKey=${markedWindowKey ?? '(none)'} marked=${markedWindowKey ? 'yes' : 'no'} saved=yes`,
   );
   const outcome = st.providerTiers[provider] === 'weekly-only'
-    ? '已完成连通预热（周额度不再创建 5 小时窗口）'
+    ? '已发送第一条消息，开启新一周额度'
     : '已预热，新的额度窗口已开始';
   return ctx.receipt(`✅ ${provider} ${outcome}。\n模型回复：「${reply || '(空)'}」`);
 }
@@ -404,19 +412,25 @@ function collectPlanningUsages(
 function planningReferenceTime(raw: Record<string, unknown>): Date {
   const target = String(raw['target_date'] ?? '');
   const start = String(raw['work_start'] ?? '09:00').split(/\s+/)[0] ?? '09:00';
-  const d = new Date(`${target}T${start}:00`);
-  return Number.isNaN(d.getTime()) ? new Date() : d;
+  const end = String(raw['work_end'] ?? start).split(/\s+/)[0] ?? start;
+  const startAt = new Date(`${target}T${start}:00`);
+  let endAt = new Date(`${target}T${end}:00`);
+  if (endAt.getTime() <= startAt.getTime()) endAt = new Date(endAt.getTime() + 24 * 3600_000);
+  return Number.isNaN(endAt.getTime()) ? new Date() : endAt;
 }
 
-function hasFutureWarmup(plan: { events: WarmupEventLike[] }, now: Date): boolean {
-  return countFutureWarmups(plan, now) > 0;
+function hasFuturePlanAction(plan: { events: WarmupEventLike[]; work_end?: string }, now: Date): boolean {
+  if (countFuturePlanActions(plan, now) > 0) return true;
+  if (plan.events.length > 0) return false;
+  const end = new Date(String(plan.work_end ?? '')).getTime();
+  return !Number.isNaN(end) && end > now.getTime();
 }
 
-function countFutureWarmups(plan: { events: WarmupEventLike[] }, now: Date): number {
+function countFuturePlanActions(plan: { events: WarmupEventLike[] }, now: Date): number {
   return plan.events.filter((ev) => {
     const kind = String(ev.kind ?? ev.type ?? 'warmup');
     const at = new Date(String(ev.at)).getTime();
-    return kind === 'warmup' && !Number.isNaN(at) && at > now.getTime();
+    return (kind === 'warmup' || kind === 'weekly-activation') && !Number.isNaN(at) && at > now.getTime();
   }).length;
 }
 
@@ -494,16 +508,77 @@ function applyAdoptForm(candidate: Record<string, unknown>, formValue: unknown):
   return record;
 }
 
-function hasPendingWarmup(plan: Record<string, unknown>, executedWarmups: string[]): boolean {
-  const planId = String(plan['plan_id'] ?? '');
-  const now = Date.now();
-  for (const ev of (plan['events'] as Array<Record<string, unknown>> | undefined) ?? []) {
-    const kind = String(ev['kind'] ?? ev['type'] ?? 'warmup');
-    if (kind !== 'warmup') continue;
-    const key = `${planId}:${String(ev['agent'])}:${String(ev['at'])}`;
-    if (!executedWarmups.includes(key) && new Date(String(ev['at'])).getTime() > now) return true;
+function hasPendingPlan(plan: Record<string, unknown>): boolean {
+  const end = new Date(String(plan['work_end'] ?? '')).getTime();
+  return !Number.isNaN(end) && end > Date.now();
+}
+
+function currentPlansCard(
+  plans: Record<string, Record<string, unknown>>,
+  st: ReturnType<StateStore['get']>,
+): Card {
+  return buildCurrentPlansCard(
+    plansForDisplay(plans, st.executedWarmups),
+    new Date(),
+    appendOptionsForPlans(plans, st.usageSnapshots.codex),
+  );
+}
+
+function appendOptionsForPlans(
+  plans: Record<string, Record<string, unknown>>,
+  snapshot: PlanningUsageSnapshot | undefined,
+): Record<string, WeeklyActivationOption | null> {
+  return Object.fromEntries(
+    Object.entries(plans).map(([day, plan]) => [day, appendOptionForPlan(plan, snapshot)]),
+  );
+}
+
+function appendOptionForPlan(
+  plan: Record<string, unknown>,
+  snapshot: PlanningUsageSnapshot | undefined,
+): WeeklyActivationOption | null {
+  const agents = (plan['agents'] as string[] | undefined) ?? [];
+  if (agents.includes('codex')) return null;
+  const start = new Date(String(plan['work_start'] ?? ''));
+  const end = new Date(String(plan['work_end'] ?? ''));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return weeklyActivationFromSnapshot(snapshot, start, end);
+}
+
+async function appendCodexWeeklyActivation(
+  payload: Record<string, unknown>,
+  ctx: HandlerCtx,
+): Promise<void> {
+  const st = ctx.state.get();
+  const target = String(payload['target_date'] ?? '');
+  const plans = activePlanIndex(st);
+  const plan = plans[target];
+  if (!plan) return ctx.receipt('该计划已失效，请重新查看当前计划');
+  const events = (plan['events'] as Array<Record<string, unknown>> | undefined) ?? [];
+  if (events.some((event) => String(event['kind']) === 'weekly-activation')) {
+    return ctx.receipt('Codex 新周期预热已经追加，无需重复设置');
   }
-  return false;
+  const option = appendOptionForPlan(plan, st.usageSnapshots.codex);
+  if (!option) return ctx.receipt('当前计划不需要或无法追加 Codex 新周期预热');
+  const expected = String(payload['expected_reset_at'] ?? '');
+  if (expected && expected !== option.resetAt.toISOString()) {
+    return ctx.receipt('Codex 周额度状态已变化，请重新查看计划');
+  }
+  plan['agents'] = [...new Set([...((plan['agents'] as string[] | undefined) ?? []), 'codex'])];
+  plan['events'] = [...events, {
+    agent: 'codex',
+    kind: 'weekly-activation',
+    at: localIso(option.at),
+    purpose: '开启 Codex 新一周额度',
+    slot: 'weekly-activation',
+    window_reset_at: option.resetAt.toISOString(),
+    window_key: option.windowKey,
+  }].sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
+  st.plansByDate = { ...plans, [target]: plan };
+  activePlanIndex(st);
+  ctx.state.save();
+  ctx.scheduler?.armPlans(Object.values(st.plansByDate));
+  return ctx.receipt(`✅ 已追加 Codex 新周期预热，将在 ${hhmmOf(option.at)} 发送第一条消息开启新周期`);
 }
 
 function setTime(base: Date, hhmm: string): Date {

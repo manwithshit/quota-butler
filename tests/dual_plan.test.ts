@@ -35,25 +35,24 @@ function weeklyOnly(utilization: number): Usage {
 }
 
 describe('dual-agent plan adoption', () => {
-  it('keeps the weekly-only relay event separate when primary warmup times are edited', async () => {
+  it('appends one Codex weekly activation after the Claude Code plan and remains idempotent', async () => {
     const request: PlanRequest = {
       targetDate: '2099-06-20',
       timeMode: 'range',
       workStart: '09:00',
       workEnd: '18:00',
-      agentStrategy: 'both',
+      agentStrategy: 'cc',
       firstWarmup: '06:30',
       secondWarmup: '11:31',
     };
-    const plan = buildPlan(request, { cc: fiveHour('cc', 20), codex: weeklyOnly(38) });
-    const candidate = planRecord(plan);
-    const statuses: Record<string, AgentStatus> = {
-      cc: { provider: 'cc', state: AgentState.CONNECTED, usage: fiveHour('cc', 20) },
-      codex: { provider: 'codex', state: AgentState.CONNECTED, usage: weeklyOnly(38) },
-    };
-    mockDetect.mockResolvedValue(statuses);
-
+    const record = planRecord(buildPlan(request, { cc: fiveHour('cc', 20) })) as unknown as Record<string, unknown>;
+    record['status'] = 'active';
     const state = new StateStore(join(tmpdir(), `qb-dual-${Date.now()}-${Math.random()}.json`));
+    state.recordUsageSnapshot('codex', weeklyOnly(100));
+    const resetAt = new Date('2099-06-20T13:00:00');
+    state.get().usageSnapshots.codex!.sevenDayResetAt = resetAt.toISOString();
+    state.get().plansByDate['2099-06-20'] = record;
+    state.get().activePlan = record;
     const armedPlans: Array<Array<Record<string, unknown>>> = [];
     const scheduler = {
       armPlans: (records: Array<Record<string, unknown>>) => {
@@ -63,12 +62,13 @@ describe('dual-agent plan adoption', () => {
     } as unknown as WarmupScheduler;
     const receipts: string[] = [];
 
+    const action = {
+      action: 'append_codex_weekly_activation',
+      target_date: '2099-06-20',
+      expected_reset_at: resetAt.toISOString(),
+    };
     await handleAction(
-      {
-        action: 'adopt_schedule',
-        plan: candidate,
-        form_value: { first_warmup: '07:00', second_warmup: '12:01' },
-      },
+      action,
       {
         state,
         scheduler,
@@ -78,18 +78,27 @@ describe('dual-agent plan adoption', () => {
         },
       },
     );
+    await handleAction(action, {
+      state,
+      scheduler,
+      send: async () => {},
+      receipt: async (message) => {
+        receipts.push(message);
+      },
+    });
 
-    expect(receipts).toEqual(['✅ 已采用计划，已布置 3 个预热任务']);
+    expect(receipts[0]).toContain('已追加 Codex 新周期预热');
+    expect(receipts[1]).toBe('Codex 新周期预热已经追加，无需重复设置');
     expect(armedPlans).toHaveLength(1);
     const adopted = state.get().plansByDate['2099-06-20']!;
     expect(adopted['agents']).toEqual(['cc', 'codex']);
     const events = adopted['events'] as Array<Record<string, unknown>>;
-    expect(events.map((event) => [event['agent'], String(event['at']).slice(11, 16), event['slot']])).toEqual([
-      ['cc', '07:00', 'primary-first'],
-      ['cc', '12:01', 'primary-second'],
-      ['codex', '13:50', 'backup-connect'],
-    ]);
-    expect(String(adopted['work_end']).slice(11, 16)).toBe('17:01');
+    expect(events.filter((event) => event['kind'] === 'weekly-activation')).toMatchObject([{
+      agent: 'codex',
+      at: '2099-06-20T13:01:30',
+      slot: 'weekly-activation',
+      window_reset_at: resetAt.toISOString(),
+    }]);
   });
 
   it('edits legacy dual records without slots by matching the primary agent', async () => {

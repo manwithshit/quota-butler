@@ -7,11 +7,11 @@ function usage(util: number, resetsAt: Date | null = null): Usage {
   return { provider: 'x', fiveHour: { utilization: util, resetsAt, windowSeconds: 18000 } };
 }
 
-function weeklyUsage(util: number): Usage {
+function weeklyUsage(util: number, resetsAt = new Date('2026-06-22T00:00:00Z')): Usage {
   return {
     provider: 'codex',
     fiveHour: null,
-    sevenDay: { utilization: util, resetsAt: new Date('2026-06-22T00:00:00Z'), windowSeconds: 604800 },
+    sevenDay: { utilization: util, resetsAt, windowSeconds: 604800 },
   };
 }
 
@@ -51,62 +51,38 @@ describe('buildPlan', () => {
     expect(plan.events.map((e) => hm(e.at))).toEqual(['09:30', '14:31']);
   });
 
-  it('auto uses one agent for a short range even when two available', () => {
+  it('auto defaults to Claude Code when both agents are available', () => {
     const plan = buildPlan(req({ timeMode: 'range', workStart: '09:00', workEnd: '13:00' }), {
       cc: usage(70),
       codex: usage(20),
     });
-    expect(plan.agents).toEqual(['codex']);
-    expect(plan.reason).toContain('只使用 Codex');
+    expect(plan.agents).toEqual(['cc']);
+    expect(plan.reason).toContain('只使用 Claude Code');
   });
 
-  it('weekly-only Codex uses one connectivity warmup instead of two fake 5h windows', () => {
+  it('weekly-only Codex needs no daily warmup while its weekly cycle is active', () => {
     const plan = buildPlan(req({ agentStrategy: 'codex' }), { codex: weeklyUsage(38) });
     expect(plan.agents).toEqual(['codex']);
-    expect(plan.events.map((e) => [e.agent, hm(e.at), e.purpose])).toEqual([
-      ['codex', '06:30', '开工前连通预热'],
-    ]);
-    expect(plan.reason).toContain('周额度');
-    expect(plan.reason).toContain('不再安排 5 小时窗口接力');
+    expect(plan.events).toEqual([]);
+    expect(plan.reason).toContain('无需每日预热');
   });
 
-  it('both strategy restores the historical two-agent relay plan', () => {
+  it('weekly-only Codex activates once after a reset inside the work range', () => {
     const plan = buildPlan(
-      req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'both' }),
-      { cc: usage(20), codex: usage(30) },
+      req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'codex' }),
+      { codex: weeklyUsage(100, new Date('2026-06-20T13:00:00')) },
     );
-    expect(plan.agents).toEqual(['cc', 'codex']);
-    expect(plan.events.map((event) => [event.agent, hm(event.at), event.slot])).toEqual([
-      ['cc', '06:30', 'primary-first'],
-      ['codex', '08:50', 'relay-pin'],
-      ['cc', '11:31', 'primary-second'],
-      ['codex', '13:50', 'relay'],
+    expect(plan.events.map((event) => [event.kind, hm(event.at), event.slot])).toEqual([
+      ['weekly-activation', '13:01', 'weekly-activation'],
     ]);
-    expect(plan.reason).toContain('接力');
+    expect(plan.events[0]?.windowKey).toContain('codex:sevenDay:');
   });
 
-  it('mixed 5h + weekly-only dual plan does not invent Codex 5h windows', () => {
-    const plan = buildPlan(
-      req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'both' }),
+  it('rejects the removed upfront both strategy', () => {
+    expect(() => buildPlan(
+      req({ agentStrategy: 'both' }),
       { cc: usage(20), codex: weeklyUsage(38) },
-    );
-    expect(plan.agents).toEqual(['cc', 'codex']);
-    expect(plan.events.map((event) => [event.agent, hm(event.at), event.slot])).toEqual([
-      ['cc', '06:30', 'primary-first'],
-      ['cc', '11:31', 'primary-second'],
-      ['codex', '13:50', 'backup-connect'],
-    ]);
-    expect(plan.events.filter((event) => event.agent === 'codex')).toHaveLength(1);
-    expect(plan.reason).toContain('周额度模式');
-  });
-
-  it('short explicit dual plan warms both tools without inventing an out-of-range relay', () => {
-    const plan = buildPlan(
-      req({ timeMode: 'range', workStart: '09:00', workEnd: '13:00', agentStrategy: 'both' }),
-      { cc: usage(20), codex: weeklyUsage(38) },
-    );
-    expect(plan.events.filter((event) => event.agent === 'codex').map((event) => hm(event.at))).toEqual(['06:30']);
-    expect(plan.reason).toContain('都在开工前完成连通预热');
+    )).toThrow('先采用 Claude Code');
   });
 
   it('keeps warmups from the request instead of recalculating from a cross-midnight range', () => {

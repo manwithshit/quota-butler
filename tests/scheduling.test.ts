@@ -270,6 +270,36 @@ describe('current plans and immediate warmup UX', () => {
     expect(text).toContain('10:00–17:31');
   });
 
+  it('shows the append action only when Codex resets before the plan ends', () => {
+    const plan = {
+      status: 'active',
+      plan_id: 'tomorrow',
+      work_start: '2026-06-24T09:00:00',
+      work_end: '2026-06-24T18:00:00',
+      agents: ['cc'],
+      events: [],
+    };
+    const eligible = JSON.stringify(buildCurrentPlansCard(
+      { '2026-06-24': plan },
+      new Date('2026-06-23T12:00:00'),
+      {
+        '2026-06-24': {
+          at: new Date('2026-06-24T13:01:30'),
+          resetAt: new Date('2026-06-24T13:00:00'),
+          windowKey: 'codex:sevenDay:2026-06-24T13:00:00.000Z',
+        },
+      },
+    ));
+    expect(eligible).toContain('追加 Codex 新周期预热');
+    expect(eligible).toContain('append_codex_weekly_activation');
+
+    const ineligible = JSON.stringify(buildCurrentPlansCard(
+      { '2026-06-24': plan },
+      new Date('2026-06-23T12:00:00'),
+    ));
+    expect(ineligible).not.toContain('追加 Codex 新周期预热');
+  });
+
   it('cancels a tomorrow plan whenever the current-plan card offers that cancel button', async () => {
     const state = new StateStore(join(tmpdir(), `qb-cancel-${Date.now()}-${Math.random()}.json`));
     const tomorrow = new Date(Date.now() + 24 * 3600000);
@@ -364,7 +394,7 @@ describe('current plans and immediate warmup UX', () => {
       },
     );
 
-    expect(receipts).toEqual(['❌ 该计划的预热时间已过，请重新生成计划']);
+    expect(receipts).toEqual(['❌ 该计划的执行时间已过，请重新生成计划']);
     expect(state.get().activePlan).toBeNull();
     expect(state.get().plansByDate).toEqual({});
   });
@@ -379,13 +409,13 @@ describe('current plans and immediate warmup UX', () => {
       },
     };
     const whole = JSON.stringify(buildManualWarmupCard(statuses));
-    expect(whole).toContain('Claude Code：7 天额度已耗尽，暂不可预热');
+    expect(whole).toContain('Claude Code：周额度已耗尽，等待下一个周期刷新');
     expect(whole).toContain('Codex：当前 5 小时窗口已在进行中，无需立即预热');
     expect(whole).not.toContain('选择要立即预热');
     expect(whole).not.toContain('暂时没有需要立即预热');
   });
 
-  it('allows weekly-only Codex connectivity warmup but still blocks monthly-only Codex', () => {
+  it('allows weekly-only Codex activation only after reset and still blocks monthly-only Codex', () => {
     const weeklyCard = JSON.stringify(buildManualWarmupCard({
       codex: {
         provider: 'codex',
@@ -393,11 +423,12 @@ describe('current plans and immediate warmup UX', () => {
         usage: {
           provider: 'codex',
           fiveHour: null,
-          sevenDay: { utilization: 23, resetsAt: new Date(Date.now() + 86400000), windowSeconds: 604800 },
+          sevenDay: { utilization: 23, resetsAt: new Date(Date.now() - 60000), windowSeconds: 604800 },
         },
       },
     }));
     expect(weeklyCard).toContain('选择要立即预热');
+    expect(weeklyCard).toContain('开启新周期');
     expect(weeklyCard).toContain('\"provider\":\"codex\"');
 
     const monthlyCard = JSON.stringify(buildManualWarmupCard({
