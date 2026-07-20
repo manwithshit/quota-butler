@@ -6,6 +6,32 @@
 
 它的目标是让你最大化利用已经拥有的额度：看得见 5 小时窗口和 7 天额度，知道什么时候恢复，提前安排明天的重度使用时间，并让本机在合适的时间点自动预热。
 
+## 选择版本
+
+### 稳定版（推荐）
+
+稳定版来自默认的 `main` 分支，适合日常长期运行：
+
+```bash
+npx github:manwithshit/quota-butler run
+```
+
+如需固定安装当前稳定快照或回滚：
+
+```bash
+npx github:manwithshit/quota-butler#v0.1.0 run
+```
+
+### V1.4 Public Preview（公开测试版）
+
+V1.4 已通过自动化测试和作者设备自测，现开放给更多用户共同验证。它适配了 Codex 仅周额度模式，重新设计了明日计划和新周周期激活逻辑。
+
+```bash
+npx github:manwithshit/quota-butler#v1.4.0-beta.1 run
+```
+
+公开测试版可能仍存在边界问题，不建议用于绝对不能错过的定时任务。欢迎通过 [GitHub Issues](https://github.com/manwithshit/quota-butler/issues) 提交复现步骤、飞书截图和脱敏日志。
+
 ## 功能预览
 
 ### 查询额度
@@ -101,16 +127,16 @@ Claude Code / Codex 登录文件
 项目采用稳定版和开发集成版分支分流，避免正在运行的机器被未验证改动直接覆盖。
 
 ```text
-main       Release / 稳定版。默认给长期运行机器使用，只合入已验证改动。
-develop    开发集成版。用于 M1 等 dogfood 机器拉取最新改动并试跑。
-codex/*    功能分支。单项改动先在这里完成测试，再合入 develop。
+main          Stable / 稳定版。默认给长期运行机器使用，只合入已验证改动。
+DevelopV1.4   Public Preview / 公开测试版。收集真实环境反馈和修复。
+agent/*       单项修改分支。通过测试和 PR 后再进入对应发布通道。
 ```
 
 建议流程：
 
-1. 功能开发在 `codex/...` 分支完成，并通过 `npm test`、`npm run typecheck`、`npm run build`。
-2. 合入 `develop` 后，在测试机器上重新拉取、构建并运行一天。
-3. 确认飞书收发、额度恢复、安静时段和计划/预热都正常后，再通过 PR 合入 `main`。
+1. 功能开发在独立分支完成，并通过 `npm test`、`npm run typecheck`、`npm run build`。
+2. 合入 Public Preview 后，在真实机器上持续验证并按 beta tag 发布预览版。
+3. 确认飞书收发、额度恢复、安静时段和计划/预热都正常后，再通过 PR 合入 `main` 并发布正式版。
 
 部署时不要删除旧版本目录。先 `quota-butler stop` 停止当前守护，再在目标分支 checkout 内构建并 `npm link`，最后 `quota-butler start`。如需回滚，回到旧版本目录重新 `npm link` 并启动。
 

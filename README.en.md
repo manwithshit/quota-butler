@@ -6,6 +6,32 @@ Quota Butler is a local macOS helper for Claude Code and Codex users. It talks t
 
 Its goal is to help you make better use of the quota you already have: see the 5-hour and 7-day windows, know when they recover, plan tomorrow's heavy usage window, and let your Mac warm up the right tool at the right time.
 
+## Choose A Release Channel
+
+### Stable (Recommended)
+
+Stable builds come from the default `main` branch and are recommended for long-running daily use:
+
+```bash
+npx github:manwithshit/quota-butler run
+```
+
+To pin or roll back to the current stable snapshot:
+
+```bash
+npx github:manwithshit/quota-butler#v0.1.0 run
+```
+
+### V1.4 Public Preview
+
+V1.4 has passed the automated suite and device-level checks by the maintainer. It adds weekly-only Codex support and redesigns tomorrow planning around explicit weekly-cycle activation.
+
+```bash
+npx github:manwithshit/quota-butler#v1.4.0-beta.1 run
+```
+
+The public preview may still contain edge cases and is not recommended for scheduled actions that must never be missed. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
+
 ## Preview
 
 ### Quota Status
