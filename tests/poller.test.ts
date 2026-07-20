@@ -153,7 +153,7 @@ describe('Poller deferred notifications (P0)', () => {
     await vi.advanceTimersByTimeAsync(6 * 60_000 + 30_000);
 
     expect(sends).toHaveLength(1);
-    expect(JSON.stringify(sends[0])).toContain('Codex 周额度已刷新');
+    expect(JSON.stringify(sends[0])).toContain('Codex 新一周额度已就绪');
     expect(state.get().providerWindowSnapshots.codex?.fiveHour).toBeUndefined();
     poller.stop();
   });

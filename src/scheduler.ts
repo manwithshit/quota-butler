@@ -4,7 +4,7 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { getProvider } from './providers/index.js';
 import { PROVIDER_LABEL } from './notify.js';
-import { markFiveHourWindowWarmed } from './recovery_window.js';
+import { markFiveHourWindowWarmed, markKnownRecoveryWindowWarmed } from './recovery_window.js';
 import { activePlanIndex, planIsExpired, type StateStore } from './state.js';
 import { endWarmup, tryBeginWarmup } from './warmup_lock.js';
 
@@ -19,6 +19,7 @@ interface EventRec {
   type?: string;
   at: string;
   purpose: string;
+  window_key?: string;
 }
 
 export interface ArmResult {
@@ -77,7 +78,7 @@ export class WarmupScheduler {
     let armed = 0;
     let skipped = 0;
     for (const ev of events) {
-      if (!isWarmupEvent(ev)) continue;
+      if (!isPlanAction(ev)) continue;
       const key = warmupKey(planId, ev);
       const at = new Date(ev.at).getTime();
       if (Number.isNaN(at) || at <= now || executed.has(key)) {
@@ -88,7 +89,7 @@ export class WarmupScheduler {
       this.timers.set(key, timer);
       armed += 1;
     }
-    console.log(`[scheduler] ${planId} 已布置 ${armed} 个预热节点，跳过 ${skipped} 个（过期/已执行）。`);
+    console.log(`[scheduler] ${planId} 已布置 ${armed} 个自动节点，跳过 ${skipped} 个（过期/已执行）。`);
     return { armed, skipped };
   }
 
@@ -112,32 +113,54 @@ export class WarmupScheduler {
     const st = this.state.get();
     if (st.executedWarmups.includes(key)) return;
     const label = PROVIDER_LABEL[ev.agent] ?? ev.agent;
+    const weeklyActivation = String(ev.kind ?? ev.type ?? 'warmup') === 'weekly-activation';
+    const actionLabel = weeklyActivation ? '新周期激活' : '预热';
+    const eventType = weeklyActivation ? 'weekly_activation' as const : 'warmup' as const;
     // 迟到保护：睡眠/卡顿导致远超计划时刻才触发的，直接跳过——过时预热没意义。
     if (Date.now() > new Date(ev.at).getTime() + FIRE_GRACE_MS) {
       st.executedWarmups.push(key);
-      this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'skip', detail: hm(ev.at) });
+      this.state.appendEvent({ type: eventType, agent: ev.agent, result: 'skip', detail: hm(ev.at) });
       this.state.save();
-      await this.notify(`⏭️ 跳过 ${label} 的预热（${hm(ev.at)} 已过时，可能因睡眠/关机错过）。`, { respectQuiet: true });
+      await this.notify(`⏭️ 跳过 ${label} 的${actionLabel}（${hm(ev.at)} 已过时，可能因睡眠/关机错过）。`, { respectQuiet: true });
       return;
     }
     // 同 provider 已有一次预热在跑（手动/恢复卡触发的）：本节点等价已完成，按 skip 记录，不重复烧请求。
     if (!tryBeginWarmup(ev.agent)) {
       st.executedWarmups.push(key);
-      this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'skip', detail: `${hm(ev.at)} 另一次预热进行中` });
+      this.state.appendEvent({ type: eventType, agent: ev.agent, result: 'skip', detail: `${hm(ev.at)} 另一次请求进行中` });
       this.state.save();
-      await this.notify(`⏭️ 跳过 ${label} 的定时预热（${hm(ev.at)}）：另一次预热正在进行，窗口已在开启。`, { respectQuiet: true });
+      await this.notify(
+        weeklyActivation
+          ? `⏭️ 跳过 ${label} 的定时${actionLabel}（${hm(ev.at)}）：另一次请求正在进行。`
+          : `⏭️ 跳过 ${label} 的定时预热（${hm(ev.at)}）：另一次预热正在进行，窗口已在开启。`,
+        { respectQuiet: true },
+      );
       return;
     }
     st.executedWarmups.push(key);
     this.state.save();
     try {
       const reply = await getProvider(ev.agent).warmup(WARMUP_PROMPT);
-      markFiveHourWindowWarmed(st, ev.agent, new Date());
-      this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'ok', detail: hm(ev.at) });
+      if (weeklyActivation && ev.window_key) {
+        markKnownRecoveryWindowWarmed(st, ev.agent, ev.window_key);
+      } else if (!weeklyActivation) {
+        markFiveHourWindowWarmed(st, ev.agent, new Date());
+      }
+      this.state.appendEvent({
+        type: eventType,
+        agent: ev.agent,
+        result: 'ok',
+        detail: weeklyActivation ? `${hm(ev.at)} 开启新周周期` : hm(ev.at),
+      });
       this.state.save();
-      await this.notify(`✅ ${label} 已按计划预热（${hm(ev.at)}）。\n模型回复：「${reply || '(空)'}」`, { respectQuiet: true });
+      await this.notify(
+        weeklyActivation
+          ? `✅ ${label} 已发送第一条消息，开启新一周额度（${hm(ev.at)}）。\n模型回复：「${reply || '(空)'}」`
+          : `✅ ${label} 已按计划预热（${hm(ev.at)}）。\n模型回复：「${reply || '(空)'}」`,
+        { respectQuiet: true },
+      );
     } catch (e) {
-      this.state.appendEvent({ type: 'warmup', agent: ev.agent, result: 'fail', detail: (e as Error).message.slice(0, 80) });
+      this.state.appendEvent({ type: eventType, agent: ev.agent, result: 'fail', detail: (e as Error).message.slice(0, 80) });
       this.state.save();
       await this.notify(`❌ ${label} 预热失败（${hm(ev.at)}）：${(e as Error).message}`, { respectQuiet: true });
     } finally {
@@ -220,8 +243,9 @@ function warmupKey(planId: string, ev: EventRec): string {
   return `${planId}:${ev.agent}:${ev.at}`;
 }
 
-function isWarmupEvent(ev: EventRec): boolean {
-  return String(ev.kind ?? ev.type ?? 'warmup') === 'warmup';
+function isPlanAction(ev: EventRec): boolean {
+  const kind = String(ev.kind ?? ev.type ?? 'warmup');
+  return kind === 'warmup' || kind === 'weekly-activation';
 }
 
 function hm(iso: string): string {

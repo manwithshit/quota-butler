@@ -1,9 +1,9 @@
-// 确定性 V3 明日计划计算器：auto 默认只规划一个工具，both 显式规划双 Agent。
-// 传统 5h 档用两次预热接力；仅周额度档只做一次连通预热。
+// 确定性 V3 明日计划计算器：auto 默认 Claude Code；Codex 周额度只在新周期到点时激活。
 
 import type { PlanRequest } from './schedule_flow.js';
 import { normalizeHHmm } from './schedule_flow.js';
 import type { Usage } from './providers/index.js';
+import { weeklyActivationFromUsage } from './weekly_activation.js';
 
 export const SUPPORTED_AGENTS = ['cc', 'codex'] as const;
 export const AGENT_LABELS: Record<string, string> = { cc: 'Claude Code', codex: 'Codex' };
@@ -13,7 +13,9 @@ export interface PlanEvent {
   kind: string;
   at: Date;
   purpose: string;
-  slot?: 'primary-first' | 'primary-second' | 'relay-pin' | 'relay' | 'backup-connect';
+  slot?: 'primary-first' | 'primary-second' | 'weekly-activation';
+  windowResetAt?: Date;
+  windowKey?: string;
 }
 
 export interface SchedulePlan {
@@ -41,14 +43,19 @@ export function buildPlan(request: PlanRequest, availableUsages: Record<string, 
   let events: PlanEvent[];
   let reason: string;
   if (!selectedUsage.fiveHour && selectedUsage.sevenDay) {
-    events = [{
+    const activation = weeklyActivationFromUsage(selectedUsage, start, end);
+    events = activation ? [{
       agent: firstAgent,
-      kind: 'warmup',
-      at: firstWarmup,
-      purpose: '开工前连通预热',
-      slot: 'primary-first',
-    }];
-    reason = `${AGENT_LABELS[firstAgent]} 当前使用周额度，开工前执行一次连通预热，不再安排 5 小时窗口接力。`;
+      kind: 'weekly-activation',
+      at: activation.at,
+      purpose: '开启 Codex 新一周额度',
+      slot: 'weekly-activation',
+      windowResetAt: activation.resetAt,
+      windowKey: activation.windowKey,
+    }] : [];
+    reason = activation
+      ? `${AGENT_LABELS[firstAgent]} 会在新周周期就绪后发送第一条消息，开启下一周期。`
+      : `${AGENT_LABELS[firstAgent]} 周周期进行中，明天可直接使用，无需每日预热。`;
   } else {
     const secondWarmup = combine(request, request.secondWarmup);
     const sortedWarmups = [firstWarmup, secondWarmup].sort((a, b) => a.getTime() - b.getTime());
@@ -70,46 +77,6 @@ export function buildPlan(request: PlanRequest, availableUsages: Record<string, 
       },
     ];
     reason = `当前计划只使用 ${AGENT_LABELS[firstAgent]}，用两次预热最大化单一工具的可用窗口。`;
-  }
-
-  if (selected.length === 2) {
-    const relayAgent = selected[1]!;
-    const relayUsage = availableUsages[relayAgent]!;
-    const relayAt = new Date(start.getTime() + 5 * HOUR - 10 * 60_000);
-    const hasRelayPhase = relayAt.getTime() < end.getTime();
-    if (hasRelayPhase && relayUsage.fiveHour) {
-      events.push(
-        {
-          agent: relayAgent,
-          kind: 'warmup',
-          at: new Date(relayAt.getTime() - 5 * HOUR),
-          purpose: '提前垫好接力窗口',
-          slot: 'relay-pin',
-        },
-        {
-          agent: relayAgent,
-          kind: 'warmup',
-          at: relayAt,
-          purpose: '接力刷新，无缝顶上',
-          slot: 'relay',
-        },
-      );
-    } else {
-      events.push({
-        agent: relayAgent,
-        kind: 'warmup',
-        at: hasRelayPhase ? relayAt : firstWarmup,
-        purpose: relayUsage.sevenDay && !relayUsage.fiveHour ? '接力前连通预热' : '备用工具连通预热',
-        slot: 'backup-connect',
-      });
-    }
-    if (!hasRelayPhase) {
-      reason = `${AGENT_LABELS[firstAgent]} 与 ${AGENT_LABELS[relayAgent]} 都在开工前完成连通预热，可按需切换。`;
-    } else {
-      reason = relayUsage.sevenDay && !relayUsage.fiveHour
-        ? `前半段由 ${AGENT_LABELS[firstAgent]} 使用短窗口，后半段由周额度模式的 ${AGENT_LABELS[relayAgent]} 接力。`
-        : `前半段优先保持 ${AGENT_LABELS[firstAgent]} 连续工作，后半段由 ${AGENT_LABELS[relayAgent]} 接力。`;
-    }
   }
 
   events.sort((a, b) => a.at.getTime() - b.at.getTime() || a.agent.localeCompare(b.agent));
@@ -137,38 +104,11 @@ function selectAgents(strategy: string, usages: Record<string, Usage>): string[]
     return [strategy];
   }
   if (strategy === 'both') {
-    if (available.length < 2) throw new Error('Claude Code + Codex 当前不能同时使用');
-    return rankAgentsForDual(available, usages);
+    throw new Error('请先采用 Claude Code 明日计划，再按需追加 Codex 新周期预热');
   }
-  const ranked = rankAgents(available, usages);
-  return [ranked[0]!];
-}
-
-function rankAgentsForDual(agents: string[], usages: Record<string, Usage>): string[] {
-  const ranked = rankAgents(agents, usages);
-  return ranked.sort((a, b) => {
-    const aHasFive = usages[a]!.fiveHour ? 1 : 0;
-    const bHasFive = usages[b]!.fiveHour ? 1 : 0;
-    return bHasFive - aHasFive;
-  });
-}
-
-function rankAgents(agents: string[], usages: Record<string, Usage>): string[] {
-  // 周额度（木桶上限）剩余多的优先，其次 5 小时剩余多的优先。
-  return [...agents].sort((a, b) => {
-    const wa = weeklyRemaining(usages[a]!);
-    const wb = weeklyRemaining(usages[b]!);
-    if (wa !== wb) return wb - wa;
-    // 仅周额度档没有 5h 窗口，平手时排在有短窗口可接力的工具之后。
-    const fa = usages[a]!.fiveHour ? 100 - usages[a]!.fiveHour!.utilization : 0;
-    const fb = usages[b]!.fiveHour ? 100 - usages[b]!.fiveHour!.utilization : 0;
-    if (fa !== fb) return fb - fa;
-    return (SUPPORTED_AGENTS as readonly string[]).indexOf(a) - (SUPPORTED_AGENTS as readonly string[]).indexOf(b);
-  });
-}
-
-function weeklyRemaining(usage: Usage): number {
-  return usage.sevenDay ? 100 - usage.sevenDay.utilization : 100;
+  // 每日预热只对有 5h 窗口的 Claude Code 有意义；Codex 仅作不可用时的兜底。
+  if ('cc' in usages) return ['cc'];
+  return [available[0]!];
 }
 
 function combine(request: PlanRequest, hhmm: string): Date {

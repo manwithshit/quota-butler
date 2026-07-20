@@ -9,6 +9,7 @@ import {
   type PlanRequest,
 } from './schedule_flow.js';
 import type { DailyEvent, DayQuotaSnap, LastPlanRequest, QuotaWindowName, UsageSnapshot } from './state.js';
+import { weeklyCycleState, type WeeklyActivationOption } from './weekly_activation.js';
 
 export const PROVIDER_LABEL: Record<string, string> = AGENT_LABELS;
 
@@ -44,6 +45,7 @@ function remainingLevel(remaining: number): string {
 export function buildStatusCard(
   statuses: Record<string, AgentStatus>,
   snapshots: Record<string, UsageSnapshot> = {},
+  now = new Date(),
 ): Card {
   const lines: string[] = ['**当前额度**', ''];
   for (const provider of ['cc', 'codex']) {
@@ -77,11 +79,19 @@ export function buildStatusCard(
         // 新版 Codex：取消 5 小时窗口，只保留周额度。
         const weekly = status.usage.sevenDay;
         const rem7 = 100 - weekly.utilization;
+        const cycle = weeklyCycleState(weekly, now);
+        const cycleCopy = cycle === 'exhausted'
+          ? '周额度已耗尽，等待下一个周期刷新。'
+          : cycle === 'ready'
+            ? '新一周额度已就绪，发送任意消息开始计时。'
+            : cycle === 'active'
+              ? '当前周周期进行中，无需每日预热。'
+              : '周周期状态待确认，暂不自动追加预热。';
         lines.push(
           `**${label} · 周额度**`,
           `${usageBar(rem7)} 还剩 **${rem7.toFixed(0)}%**`,
           `${remainingStatus(rem7)} · 重置：**${formatReset(weekly)}**`,
-          'ℹ️ 当前没有 5 小时窗口；计划会在开工前做一次连通预热，不再安排双窗口接力。',
+          `ℹ️ 当前没有 5 小时窗口。${cycleCopy}`,
         );
       } else if (status.usage.monthly) {
         // 免费档 Codex：只有月度窗口，不参与"预热/接力"计划。
@@ -124,11 +134,16 @@ export function buildStatusCard(
 
 // ---- 恢复 / 睡前 / 菜单 --------------------------------------------------
 
-export function buildRecoveryCard(provider: string, windowKey: string, window: QuotaWindowName = 'fiveHour'): Card {
+export function buildRecoveryCard(
+  provider: string,
+  windowKey: string,
+  window: QuotaWindowName = 'fiveHour',
+  weeklyOnly = false,
+): Card {
   const label = PROVIDER_LABEL[provider] ?? provider;
-  const copy = recoveryCopy(label, window);
+  const copy = recoveryCopy(label, window, weeklyOnly);
   const buttons = [];
-  buttons.push(button('立即预热', 'primary', cb('warmup_now', { provider, window_key: windowKey })));
+  buttons.push(button(weeklyOnly && window === 'sevenDay' ? '立即开启新周期' : '立即预热', 'primary', cb('warmup_now', { provider, window_key: windowKey })));
   buttons.push(
     button('30 分钟后提醒', 'default', cb('recovery_snooze', { provider, window_key: windowKey, window, minutes: 30 })),
     button('暂时不用', 'default', cb('recovery_skip', { provider, window_key: windowKey, window })),
@@ -136,8 +151,14 @@ export function buildRecoveryCard(provider: string, windowKey: string, window: Q
   return card(copy.title, [`⚡ **${copy.body}**`], buttons);
 }
 
-function recoveryCopy(label: string, window: QuotaWindowName): { title: string; body: string } {
+function recoveryCopy(label: string, window: QuotaWindowName, weeklyOnly = false): { title: string; body: string } {
   if (window === 'sevenDay') {
+    if (weeklyOnly) {
+      return {
+        title: `${label} 新一周额度已就绪`,
+        body: '发送任意消息开始新周期计时。',
+      };
+    }
     return {
       title: `${label} 周额度已刷新`,
       body: `${label} 周额度已刷新，可以重新安排重度任务。`,
@@ -228,6 +249,7 @@ function dailyReportLines(
   // B1 预热执行 / B2 恢复
   const todays = (ctx.eventLog ?? []).filter((e) => localDate(new Date(e.ts)) === today);
   const warmups = todays.filter((e) => e.type === 'warmup');
+  const weeklyActivations = todays.filter((e) => e.type === 'weekly_activation');
   const activePlan = planSummary(ctx.activePlan, now);
   if (warmups.length) {
     const ok = warmups.filter((e) => e.result === 'ok').length;
@@ -238,6 +260,12 @@ function dailyReportLines(
     lines.push(`**今日预热**：今日无已执行预热；明日已安排 ${activePlan.warmups.length} 个预热节点`);
   } else {
     lines.push('**今日预热**：无定时预热任务');
+  }
+  if (weeklyActivations.length) {
+    const ok = weeklyActivations.filter((e) => e.result === 'ok').length;
+    const fail = weeklyActivations.filter((e) => e.result === 'fail').length;
+    const skip = weeklyActivations.filter((e) => e.result === 'skip').length;
+    lines.push(`**Codex 新周期激活**：${weeklyActivations.length} 次（✅ ${ok} · ❌ ${fail} · ⏭️ ${skip}）`);
   }
   const recos = todays.filter((e) => e.type === 'recovery');
   if (recos.length) {
@@ -366,7 +394,15 @@ export function buildManualWarmupCard(statuses: Record<string, AgentStatus>): Ca
     const status = statuses[provider];
     const reason = status ? manualWarmupBlockReason(status) : `${PROVIDER_LABEL[provider]!}：暂不可用`;
     if (!reason) {
-      buttons.push(button(PROVIDER_LABEL[provider]!, buttons.length === 0 ? 'primary' : 'default', cb('warmup_now', { provider })));
+      const weekly = status?.usage?.fiveHour ? null : status?.usage?.sevenDay;
+      const windowKey = weekly?.resetsAt && weeklyCycleState(weekly) === 'ready'
+        ? `${provider}:sevenDay:${weekly.resetsAt.toISOString()}`
+        : '';
+      buttons.push(button(
+        weekly ? `${PROVIDER_LABEL[provider]!}（开启新周期）` : PROVIDER_LABEL[provider]!,
+        buttons.length === 0 ? 'primary' : 'default',
+        cb('warmup_now', { provider, ...(windowKey ? { window_key: windowKey } : {}) }),
+      ));
     } else {
       lines.push(reason);
     }
@@ -400,8 +436,8 @@ export function buildTimeCard(request: PlanRequest, error = ''): Card {
   });
   const lines = [
     '**选择重度使用时间**',
-    '只需要选择开始时间；系统会优先选择一个可用工具，并生成两次预热节点。',
-    '确认计划前，你还可以调整两次预热时间。',
+    '只需要选择开始时间；默认使用 Claude Code，并生成两次预热节点。',
+    '若 Claude Code 不可用，将按 Codex 周周期状态生成兜底计划。',
   ];
   if (error) lines.push('', `❌ ${error}`);
   return {
@@ -417,7 +453,9 @@ export function buildTimeCard(request: PlanRequest, error = ''): Card {
 }
 
 export function buildAgentControlCard(request: PlanRequest, statuses: Record<string, AgentStatus>): Card {
-  const planningAt = new Date(`${request.targetDate}T${request.workStart}:00`);
+  const workStart = new Date(`${request.targetDate}T${request.workStart}:00`);
+  let planningAt = new Date(`${request.targetDate}T${request.workEnd}:00`);
+  if (planningAt.getTime() <= workStart.getTime()) planningAt = new Date(planningAt.getTime() + 24 * 3600_000);
   const available = ['cc', 'codex'].filter((p) => {
     const status = statuses[p];
     return status && isSchedulable(status) && status.usage && usableForPlanningAt(status.usage, planningAt);
@@ -428,7 +466,7 @@ export function buildAgentControlCard(request: PlanRequest, statuses: Record<str
       button('重新检测', 'primary', cb('redetect_agents', { request: requestToPayloadShape(request) })),
     ]);
   }
-  const buttons = ([['Claude Code', 'cc'], ['Codex', 'codex'], ['两个都用', 'both']] as const).map(
+  const buttons = ([['Claude Code', 'cc'], ['Codex', 'codex']] as const).map(
     ([label, strategy]) => {
       const candidate: PlanRequest = { ...request, agentStrategy: strategy };
       return button(label, strategy === request.agentStrategy ? 'primary' : 'default', {
@@ -442,7 +480,10 @@ export function buildAgentControlCard(request: PlanRequest, statuses: Record<str
 
 // ---- 当前计划卡 ----------------------------------------------------------
 
-export function buildActivePlanCard(record: Record<string, unknown>): Card {
+export function buildActivePlanCard(
+  record: Record<string, unknown>,
+  appendOption?: WeeklyActivationOption | null,
+): Card {
   if (record['manual']) {
     const evts = (record['events'] as Array<Record<string, unknown>> | undefined) ?? [];
     const lines = ['**手动预热（已采用）**'];
@@ -466,18 +507,32 @@ export function buildActivePlanCard(record: Record<string, unknown>): Card {
     `重度使用时段：**${start}–${endText}**`,
     `负责的 AI：**${labels || '未记录'}**`,
     '',
-    '额度管家会到点自动帮你预热：',
+    '额度管家会到点自动执行：',
   ];
   const events = (record['events'] as Array<Record<string, unknown>> | undefined) ?? [];
   for (const ev of events) {
     const label = PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent']);
     const purpose = ev['purpose'] ? ` · ${String(ev['purpose'])}` : '';
-    lines.push(`🔥 **${hhmmOf(ev['at'])}** 预热 ${label}${purpose}`);
+    const weekly = String(ev['kind']) === 'weekly-activation';
+    lines.push(`${weekly ? '🆕' : '🔥'} **${hhmmOf(ev['at'])}** ${weekly ? '开启新周期' : '预热'} ${label}${purpose}`);
   }
-  return card('额度管家：当前计划', lines, [button('取消计划', 'danger', cb('cancel_schedule', { target_date: startIso.slice(0, 10) }))]);
+  if (!events.length) lines.push('无需定时预热，工作时段内可直接使用。');
+  const buttons = [];
+  if (appendOption && !hasWeeklyActivation(record)) {
+    buttons.push(button('追加 Codex 新周期预热', 'primary', cb('append_codex_weekly_activation', {
+      target_date: startIso.slice(0, 10),
+      expected_reset_at: appendOption.resetAt.toISOString(),
+    })));
+  }
+  buttons.push(button('取消计划', 'danger', cb('cancel_schedule', { target_date: startIso.slice(0, 10) })));
+  return card('额度管家：当前计划', lines, buttons);
 }
 
-export function buildCurrentPlansCard(plans: Record<string, Record<string, unknown>>, now = new Date()): Card {
+export function buildCurrentPlansCard(
+  plans: Record<string, Record<string, unknown>>,
+  now = new Date(),
+  appendOptions: Record<string, WeeklyActivationOption | null> = {},
+): Card {
   const today = localDate(now);
   const tomorrow = localDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
   const lines = ['**当前计划**', ''];
@@ -494,9 +549,17 @@ export function buildCurrentPlansCard(plans: Record<string, Record<string, unkno
     const agents = ((record['agents'] as string[] | undefined) ?? []).map((a) => PROVIDER_LABEL[a] ?? a).join(' + ');
     lines.push(`${start}–${end} · ${agents || '未记录'}`);
     for (const ev of (record['events'] as Array<Record<string, unknown>> | undefined) ?? []) {
-      lines.push(`⌛ ${hhmmOf(ev['at'])} · ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])} · ${eventStatus(record, ev)}`);
+      const eventLabel = String(ev['kind']) === 'weekly-activation' ? '开启新周周期' : '预热';
+      lines.push(`⌛ ${hhmmOf(ev['at'])} · ${PROVIDER_LABEL[String(ev['agent'])] ?? String(ev['agent'])} ${eventLabel} · ${eventStatus(record, ev)}`);
     }
-    if (hasPendingWarmup(record)) buttons.push(button(`取消${label}`, 'danger', cb('cancel_schedule', { target_date: day })));
+    const appendOption = appendOptions[day];
+    if (appendOption && !hasWeeklyActivation(record)) {
+      buttons.push(button('追加 Codex 新周期预热', 'primary', cb('append_codex_weekly_activation', {
+        target_date: day,
+        expected_reset_at: appendOption.resetAt.toISOString(),
+      })));
+    }
+    if (hasPendingPlan(record)) buttons.push(button(`取消${label}`, 'danger', cb('cancel_schedule', { target_date: day })));
     lines.push('');
   }
   return card('额度管家：当前计划', lines, buttons, 1);
@@ -510,17 +573,19 @@ export function buildScheduleCard(plan: SchedulePlan): Card {
   const events = ([...record['events']] as unknown as Array<Record<string, unknown>>)
     .sort((a, b) => String(a['at']).localeCompare(String(b['at'])));
   const firstAgent = plan.agents[0]!;
-  const markedPrimary = events.filter((event) => String(event['slot'] ?? '').startsWith('primary-'));
+  const warmupEvents = events.filter((event) => String(event['kind'] ?? 'warmup') === 'warmup');
+  const markedPrimary = warmupEvents.filter((event) => String(event['slot'] ?? '').startsWith('primary-'));
   const primaryEvents = markedPrimary.length
     ? markedPrimary
-    : events.filter((event) => String(event['agent']) === firstAgent);
-  const formElements: Array<Record<string, unknown>> = [
-    {
+    : warmupEvents.filter((event) => String(event['agent']) === firstAgent);
+  const formElements: Array<Record<string, unknown>> = [];
+  if (primaryEvents.length) {
+    formElements.push({
       tag: 'picker_time', name: 'first_warmup',
       placeholder: { tag: 'plain_text', content: primaryEvents.length === 1 ? '开工前预热' : '第一次预热' },
       initial_time: hhmmOf(primaryEvents[0]?.['at']), required: true,
-    },
-  ];
+    });
+  }
   if (primaryEvents.length > 1) {
     formElements.push({
       tag: 'picker_time', name: 'second_warmup',
@@ -566,55 +631,23 @@ function scheduleTimelineElements(plan: SchedulePlan): Array<Record<string, unkn
   const secondWarm = fw[1] ?? we;
   const windowCount = Math.max(1, fw.length);
 
-  if (plan.agents.length === 2) {
-    const relay = plan.agents[1]!;
-    const relayLabel = PROVIDER_LABEL[relay]!;
-    const relayEvents = plan.events.filter((event) => event.agent === relay).sort((a, b) => a.at.getTime() - b.at.getTime());
-    const relayPoint = relayEvents[relayEvents.length - 1]?.at ?? we;
-    const hasRelayPhase = relayPoint.getTime() > ws.getTime();
-    const primaryMode = fw.length > 1 ? '两段 5 小时窗口' : '周额度';
-    const relayMode = relayEvents.some((event) => event.slot === 'relay-pin') ? '5 小时窗口接力' : '一次连通预热';
-    const phases: Array<Record<string, unknown>> = [
-      md(`✅ **主工具** · ${firstLabel}：${fw.map((at) => hm(at)).join('、')}（${primaryMode}）`),
-    ];
-    for (const event of relayEvents) {
-      phases.push(md(`🔄 **接力工具** · ${hm(event.at)} ${relayLabel}：${event.purpose}`));
-    }
-    return [
-      md(`**明天 ${hm(ws)}–${endLabel(ws, we)}：${firstLabel} + ${relayLabel}**`),
-      md(hasRelayPhase
-        ? `前半段优先使用 ${firstLabel}，后半段由 ${relayLabel} 接力。`
-        : `${firstLabel} 与 ${relayLabel} 都在开工前就绪，可按需切换。`),
-      row(
-        [segColumn(2, 'blue-200', `${firstLabel}\n主工具`), segColumn(2, 'wathet-200', `${relayLabel}\n接力`)],
-        '8px 0px 2px 0px',
-      ),
-      row(
-        [segColumn(2, null, `${hm(ws)}\n你开工`), segColumn(2, null, `${hm(relayPoint)}\n${hasRelayPhase ? '接力点' : '备用就绪'}`)],
-        '0px 0px 6px 0px',
-      ),
-      md(`将创建 **${plan.events.length}** 个预热任务：${firstLabel} 使用${primaryMode}，${relayLabel} 使用${relayMode}。`),
-      md(`确认前只调整主工具的预热时间；${relayLabel} 的接力时间由工作时段自动派生。`),
-      ...phases,
-    ];
-  }
-
-  if (fw.length === 1) {
+  if (!plan.events.some((event) => event.kind === 'warmup')) {
     const duration = Math.max(1, (we.getTime() - ws.getTime()) / 3600000);
+    const activation = plan.events.find((event) => event.kind === 'weekly-activation');
     return [
       md(`**明天 ${hm(ws)}–${endLabel(ws, we)}：${firstLabel}**`),
       md('当前按 **周额度** 计费，不再拆分 5 小时窗口。'),
       row(
-        [segColumn(1, 'grey-200', '预备'), segColumn(segWeight(duration), 'blue-200', '周额度\n**按需使用**')],
+        [segColumn(segWeight(duration), 'blue-200', '周额度\n**按需使用**')],
         '8px 0px 2px 0px',
       ),
       row(
-        [segColumn(1, null, `${hm(prepStart)}\n连通预热`), segColumn(segWeight(duration), null, `${hm(ws)}\n你开工`)],
+        [segColumn(segWeight(duration), null, `${hm(ws)}\n你开工`)],
         '0px 0px 6px 0px',
       ),
-      md(`重点使用区间：**${hm(ws)}–${endLabel(ws, we)}**。将创建 **1** 个开工前预热任务；预热会发起一次真实请求。`),
-      md('确认前可以调整开工前预热时间。'),
-      md(`✅ **开工前** · ${hm(prepStart)} 完成连通检查，${hm(ws)} 打开直接用。`),
+      md(activation
+        ? `重点使用区间：**${hm(ws)}–${endLabel(ws, we)}**。将在 **${hm(activation.at)}** 发送第一条消息，开启新一周额度。`
+        : `重点使用区间：**${hm(ws)}–${endLabel(ws, we)}**。当前周周期进行中，无需预热，明天可直接使用。`),
     ];
   }
 
@@ -756,10 +789,18 @@ function manualWarmupBlockReason(status: AgentStatus): string {
   if (status.state === AgentState.NEEDS_LOGIN) return `${label}：需要重新登录`;
   if (status.state !== AgentState.CONNECTED || !status.usage) return `${label}：暂不可用`;
   const weekly = status.usage.sevenDay;
-  if (weekly && weekly.utilization >= 100) return `${label}：7 天额度已耗尽，暂不可预热`;
+  if (weekly && weekly.utilization >= 100 && weeklyCycleState(weekly) !== 'ready') {
+    return `${label}：周额度已耗尽，等待下一个周期刷新`;
+  }
   const five = status.usage.fiveHour;
   if (!five) {
-    if (weekly) return '';
+    if (weekly) {
+      const cycle = weeklyCycleState(weekly);
+      if (cycle === 'ready') return '';
+      if (cycle === 'exhausted') return `${label}：周额度已耗尽，等待下一个周期刷新`;
+      if (cycle === 'active') return `${label}：当前周周期进行中，无需预热`;
+      return `${label}：周周期状态待确认，暂不可预热`;
+    }
     return `${label}：只有月度额度，暂不参与预热`;
   }
   const reset = five.resetsAt;
@@ -772,8 +813,10 @@ function manualWarmupBlockReason(status: AgentStatus): string {
   return '';
 }
 
-function hasPendingWarmup(record: Record<string, unknown>): boolean {
+function hasPendingPlan(record: Record<string, unknown>): boolean {
   const now = Date.now();
+  const workEnd = new Date(String(record['work_end'] ?? '')).getTime();
+  if (!Number.isNaN(workEnd) && workEnd > now) return true;
   const planId = String(record['plan_id'] ?? '');
   const executed = new Set((record['executed_warmups'] as string[] | undefined) ?? []);
   for (const ev of (record['events'] as Array<Record<string, unknown>> | undefined) ?? []) {
@@ -782,6 +825,11 @@ function hasPendingWarmup(record: Record<string, unknown>): boolean {
     if (!executed.has(key) && new Date(at).getTime() > now) return true;
   }
   return false;
+}
+
+function hasWeeklyActivation(record: Record<string, unknown>): boolean {
+  return ((record['events'] as Array<Record<string, unknown>> | undefined) ?? [])
+    .some((event) => String(event['kind']) === 'weekly-activation');
 }
 
 function eventStatus(record: Record<string, unknown>, ev: Record<string, unknown>): string {

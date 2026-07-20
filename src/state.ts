@@ -49,7 +49,7 @@ export interface LastPlanRequest {
 /** 日报用的事件流水（预热执行 / 额度恢复），保留最近几天、自动裁剪。 */
 export interface DailyEvent {
   ts: string; // ISO
-  type: 'warmup' | 'recovery';
+  type: 'warmup' | 'weekly_activation' | 'recovery';
   agent?: string;
   window?: QuotaWindowName;
   result?: 'ok' | 'fail' | 'skip';
