@@ -6,25 +6,21 @@ Quota Butler is a local macOS helper for Claude Code and Codex users. It talks t
 
 Its goal is to help you make better use of the quota you already have: see 5-hour, 7-day, or monthly windows, know when they recover, plan tomorrow's heavy usage window, and let your Mac warm up the right tool at the right time.
 
-## Choose A Release Channel
+## Current Version: V1.4
 
-### Stable (Recommended)
-
-Stable builds come from the default `main` branch and are recommended for long-running daily use:
+V1.4 is the only supported release line. The default `main` branch always points to the current version after automated verification and real-device dogfooding; the project does not maintain a parallel version track.
 
 ```bash
 npx github:manwithshit/quota-butler run
 ```
 
-To pin or roll back to the current stable snapshot:
+To pin the current version tag or roll back later:
 
 ```bash
 npx github:manwithshit/quota-butler#v1.4.0 run
 ```
 
-### V1.4 Stable
-
-V1.4 is now stable after its public preview and sustained maintainer dogfooding. It adds weekly-only Codex support, redesigns tomorrow planning around explicit weekly-cycle activation, and strengthens state persistence, warm-up locking, daemon recovery, and network reconnection. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
+V1.4 has completed public testing and sustained maintainer dogfooding. It adds weekly-only Codex support, redesigns tomorrow planning around explicit weekly-cycle activation, and strengthens state persistence, warm-up locking, daemon recovery, and network reconnection. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
 
 ## Preview
 
@@ -111,6 +107,22 @@ Claude Code / Codex auth files
 ```
 
 Keep secrets local. Feishu/Lark app credentials, access tokens, open IDs, chat IDs, local state, and Claude Code / Codex auth files should never be committed to this repository.
+
+## Branch And Release Workflow
+
+The project maintains one public release entry point. Changes are developed and verified on focused branches, then merged into `main` through a pull request. Unverified code does not go directly into `main`.
+
+```text
+main          The only public release branch; contains the current verified version.
+agent/*       Focused feature or fix branches; merged into main after tests and review.
+```
+
+Recommended workflow:
+
+1. Develop on a focused branch and pass `npm test`, `npm run typecheck`, and `npm run build`.
+2. Dogfood the candidate on a real device from that branch or a candidate tag.
+3. After Feishu messaging, quota recovery, quiet hours, planning, and warm-ups are verified, merge through a pull request and create a version tag.
+4. Users install the current verified version from `main`; future versions continue on the same release line.
 
 ## Known Limitations
 
