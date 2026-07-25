@@ -1,8 +1,9 @@
-// 确定性 V3 明日计划计算器：一次只规划一个 AI 工具，用两次预热最大化单工具窗口。
+// 确定性 V3 明日计划计算器：auto 默认 Claude Code；Codex 周额度只在新周期到点时激活。
 
 import type { PlanRequest } from './schedule_flow.js';
 import { normalizeHHmm } from './schedule_flow.js';
 import type { Usage } from './providers/index.js';
+import { weeklyActivationFromUsage } from './weekly_activation.js';
 
 export const SUPPORTED_AGENTS = ['cc', 'codex'] as const;
 export const AGENT_LABELS: Record<string, string> = { cc: 'Claude Code', codex: 'Codex' };
@@ -12,6 +13,9 @@ export interface PlanEvent {
   kind: string;
   at: Date;
   purpose: string;
+  slot?: 'primary-first' | 'primary-second' | 'weekly-activation';
+  windowResetAt?: Date;
+  windowKey?: string;
 }
 
 export interface SchedulePlan {
@@ -34,17 +38,46 @@ export function buildPlan(request: PlanRequest, availableUsages: Record<string, 
   const selected = selectAgents(request.agentStrategy, availableUsages);
 
   const firstAgent = selected[0]!;
+  const selectedUsage = availableUsages[firstAgent]!;
   const firstWarmup = combine(request, request.firstWarmup);
-  const secondWarmup = combine(request, request.secondWarmup);
-  const sortedWarmups = [firstWarmup, secondWarmup].sort((a, b) => a.getTime() - b.getTime());
-  if (end.getTime() <= sortedWarmups[1]!.getTime()) end = new Date(sortedWarmups[1]!.getTime() + 5 * HOUR);
-
-  const events: PlanEvent[] = [
-    { agent: firstAgent, kind: 'warmup', at: sortedWarmups[0]!, purpose: '准备第一个窗口' },
-    { agent: firstAgent, kind: 'warmup', at: sortedWarmups[1]!, purpose: '恢复后准备第二个窗口' },
-  ];
-
-  const reason = `当前计划只使用 ${AGENT_LABELS[firstAgent]}，用两次预热最大化单一工具的可用窗口。`;
+  let events: PlanEvent[];
+  let reason: string;
+  if (!selectedUsage.fiveHour && selectedUsage.sevenDay) {
+    const activation = weeklyActivationFromUsage(selectedUsage, start, end);
+    events = activation ? [{
+      agent: firstAgent,
+      kind: 'weekly-activation',
+      at: activation.at,
+      purpose: '开启 Codex 新一周额度',
+      slot: 'weekly-activation',
+      windowResetAt: activation.resetAt,
+      windowKey: activation.windowKey,
+    }] : [];
+    reason = activation
+      ? `${AGENT_LABELS[firstAgent]} 会在新周周期就绪后发送第一条消息，开启下一周期。`
+      : `${AGENT_LABELS[firstAgent]} 周周期进行中，明天可直接使用，无需每日预热。`;
+  } else {
+    const secondWarmup = combine(request, request.secondWarmup);
+    const sortedWarmups = [firstWarmup, secondWarmup].sort((a, b) => a.getTime() - b.getTime());
+    if (end.getTime() <= sortedWarmups[1]!.getTime()) end = new Date(sortedWarmups[1]!.getTime() + 5 * HOUR);
+    events = [
+      {
+        agent: firstAgent,
+        kind: 'warmup',
+        at: sortedWarmups[0]!,
+        purpose: '准备第一个窗口',
+        slot: 'primary-first',
+      },
+      {
+        agent: firstAgent,
+        kind: 'warmup',
+        at: sortedWarmups[1]!,
+        purpose: '恢复后准备第二个窗口',
+        slot: 'primary-second',
+      },
+    ];
+    reason = `当前计划只使用 ${AGENT_LABELS[firstAgent]}，用两次预热最大化单一工具的可用窗口。`;
+  }
 
   events.sort((a, b) => a.at.getTime() - b.at.getTime() || a.agent.localeCompare(b.agent));
   return { agents: selected, workStart: start, workEnd: end, events, reason, request, planVersion: 3 };
@@ -71,28 +104,11 @@ function selectAgents(strategy: string, usages: Record<string, Usage>): string[]
     return [strategy];
   }
   if (strategy === 'both') {
-    throw new Error('当前流程一次只编排一个 AI 工具');
+    throw new Error('请先采用 Claude Code 明日计划，再按需追加 Codex 新周期预热');
   }
-  const ranked = rankAgents(available, usages);
-  return [ranked[0]!];
-}
-
-function rankAgents(agents: string[], usages: Record<string, Usage>): string[] {
-  // 周额度（木桶上限）剩余多的优先，其次 5 小时剩余多的优先。
-  return [...agents].sort((a, b) => {
-    const wa = weeklyRemaining(usages[a]!);
-    const wb = weeklyRemaining(usages[b]!);
-    if (wa !== wb) return wb - wa;
-    // 规划候选必有 5h 窗口（usableForPlanning 已保证），仍做空值兜底。
-    const fa = usages[a]!.fiveHour ? 100 - usages[a]!.fiveHour!.utilization : 0;
-    const fb = usages[b]!.fiveHour ? 100 - usages[b]!.fiveHour!.utilization : 0;
-    if (fa !== fb) return fb - fa;
-    return (SUPPORTED_AGENTS as readonly string[]).indexOf(a) - (SUPPORTED_AGENTS as readonly string[]).indexOf(b);
-  });
-}
-
-function weeklyRemaining(usage: Usage): number {
-  return usage.sevenDay ? 100 - usage.sevenDay.utilization : 100;
+  // 每日预热只对有 5h 窗口的 Claude Code 有意义；Codex 仅作不可用时的兜底。
+  if ('cc' in usages) return ['cc'];
+  return [available[0]!];
 }
 
 function combine(request: PlanRequest, hhmm: string): Date {

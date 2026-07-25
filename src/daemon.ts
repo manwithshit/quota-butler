@@ -1,6 +1,6 @@
 // macOS launchd 守护：start / stop / status。只守护主进程（run），不做 per-task。
 
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { chmodSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -12,6 +12,31 @@ const LOG_DIR = join(homedir(), '.quota-butler', 'logs');
 
 function uid(): number {
   return process.getuid?.() ?? 0;
+}
+
+export function daemonEnvironment(path: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const result: Record<string, string> = { PATH: path, QUOTA_BUTLER_DAEMON: '1' };
+  const proxy =
+    env.QUOTA_BUTLER_PROXY ?? env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy;
+  if (!proxy) return result;
+
+  result.HTTP_PROXY = proxy;
+  result.HTTPS_PROXY = proxy;
+  result.http_proxy = proxy;
+  result.https_proxy = proxy;
+  const noProxy = env.NO_PROXY ?? env.no_proxy ?? 'localhost,127.0.0.1,::1';
+  result.NO_PROXY = noProxy;
+  result.no_proxy = noProxy;
+  return result;
+}
+
+function xml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 }
 
 export function installDaemon(): void {
@@ -35,6 +60,9 @@ export function installDaemon(): void {
     join(homedir(), '.local', 'bin'),
     join(homedir(), '.npm-global', 'bin'),
   ].join(':');
+  const environmentXml = Object.entries(daemonEnvironment(path))
+    .map(([key, value]) => `    <key>${xml(key)}</key><string>${xml(value)}</string>`)
+    .join('\n');
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,7 +76,9 @@ export function installDaemon(): void {
     <string>run</string>
   </array>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${path}</string></dict>
+  <dict>
+${environmentXml}
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${join(LOG_DIR, 'daemon.log')}</string>
@@ -57,6 +87,7 @@ export function installDaemon(): void {
 </plist>
 `;
   writeFileSync(PLIST, plist, 'utf-8');
+  chmodSync(PLIST, 0o600);
   try {
     execFileSync('launchctl', ['bootout', `gui/${uid()}/${LABEL}`], { stdio: 'ignore' });
   } catch {

@@ -1,10 +1,10 @@
 // 本地状态持久化（~/.quota-butler/state.json）。单进程内存态 + 落盘。
 // 移植自 Python state.py，并新增 usageSnapshots（last-good 快照，cc-switch 同款）。
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { ProviderTier, Usage } from './providers/index.js';
+import { usageTier, type ProviderTier, type Usage } from './providers/index.js';
 
 const STATE_PATH = join(homedir(), '.quota-butler', 'state.json');
 
@@ -49,7 +49,7 @@ export interface LastPlanRequest {
 /** 日报用的事件流水（预热执行 / 额度恢复），保留最近几天、自动裁剪。 */
 export interface DailyEvent {
   ts: string; // ISO
-  type: 'warmup' | 'recovery';
+  type: 'warmup' | 'weekly_activation' | 'recovery';
   agent?: string;
   window?: QuotaWindowName;
   result?: 'ok' | 'fail' | 'skip';
@@ -85,8 +85,8 @@ export interface State {
   lastBedtimePromptDate: string | null;
   providerSnapshots: Record<string, { utilization: number; resetAt: string | null }>;
   providerWindowSnapshots: Record<string, Partial<Record<QuotaWindowName, WindowSnapshot>>>;
-  // 上次成功读到的各家档位（monthly-only=免费档 Codex / has-5h=付费档/CC）。
-  // 跨进程持久化：免费档一旦认出，后续只读感知就不再触发会烧月额度的 codex exec 刷新。
+  // 上次成功读到的各家窗口档位。
+  // 跨进程持久化：无 5h 的 Codex 一旦认出，后续只读感知就不再触发会烧长周期额度的刷新。
   providerTiers: Record<string, ProviderTier>;
   executedWarmups: string[]; // `${planId}:${agent}:${at}`，防进程重启后重复触发
   lastPlanRequest: LastPlanRequest | null; // "复用上次"用
@@ -123,15 +123,23 @@ function defaultState(): State {
 
 export class StateStore {
   private state: State;
+  /** 加载时发现 state.json 损坏被重置的说明（含备份路径）。连上飞书后应告知 owner 一次。 */
+  readonly loadWarning: string | null;
   constructor(private readonly path: string = STATE_PATH) {
-    this.state = load(path);
+    const loaded = load(path);
+    this.state = loaded.state;
+    this.loadWarning = loaded.warning;
   }
   get(): State {
     return this.state;
   }
+  /** 原子落盘：先写临时文件再 rename，进程中途被杀也不会留下半个 JSON。
+   *  state 含额度快照等本机数据，权限收紧为 0600（rename 保留 tmp 的 mode）。 */
   save(): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(this.state, null, 2), 'utf-8');
+    const tmp = `${this.path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(this.state, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    renameSync(tmp, this.path);
   }
   /** 追加一条日报事件（预热/恢复）并裁剪过期条目。调用方负责 save()。 */
   appendEvent(event: Omit<DailyEvent, 'ts'> & { ts?: string }): void {
@@ -172,6 +180,7 @@ export class StateStore {
       monthlyResetAt: usage.monthly?.resetsAt ? usage.monthly.resetsAt.toISOString() : null,
       capturedAt: new Date().toISOString(),
     };
+    this.state.providerTiers = { ...this.state.providerTiers, [provider]: usageTier(usage) };
   }
 }
 
@@ -214,11 +223,41 @@ function localDate(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-function load(path: string): State {
+function load(path: string): { state: State; warning: string | null } {
+  let text: string;
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8')) as Partial<State>;
-    return { ...defaultState(), ...raw };
+    text = readFileSync(path, 'utf-8');
   } catch {
-    return defaultState();
+    return { state: defaultState(), warning: null }; // 首次运行没有文件，属正常
+  }
+  try {
+    const raw = JSON.parse(text) as Partial<State>;
+    tightenMode(path);
+    return { state: { ...defaultState(), ...raw }, warning: null };
+  } catch {
+    // 文件损坏（多半是写入中途断电/被杀）：备份原文件再重置，不静默吞掉。
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backup = `${path}.corrupt-${stamp}`;
+    try {
+      renameSync(path, backup);
+    } catch {
+      // 备份失败也要继续启动，警告里如实说明。
+      return {
+        state: defaultState(),
+        warning: '⚠️ 本地状态文件 state.json 损坏且备份失败，已重置为空状态。已采用的计划和提醒去重记录丢失，请重新设置计划。',
+      };
+    }
+    return {
+      state: defaultState(),
+      warning: `⚠️ 本地状态文件 state.json 损坏，已备份到 ${backup} 并重置为空状态。已采用的计划和提醒去重记录丢失，请重新设置计划。`,
+    };
+  }
+}
+
+function tightenMode(path: string): void {
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // 权限收紧失败不阻塞启动
   }
 }
