@@ -19,18 +19,12 @@ npx github:manwithshit/quota-butler run
 To pin or roll back to the current stable snapshot:
 
 ```bash
-npx github:manwithshit/quota-butler#v0.1.0 run
+npx github:manwithshit/quota-butler#v1.4.0 run
 ```
 
-### V1.4 Public Preview
+### V1.4 Stable
 
-V1.4 has passed the automated suite and device-level checks by the maintainer. It adds weekly-only Codex support and redesigns tomorrow planning around explicit weekly-cycle activation.
-
-```bash
-npx github:manwithshit/quota-butler#v1.4.0-beta.1 run
-```
-
-The public preview may still contain edge cases and is not recommended for scheduled actions that must never be missed. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
+V1.4 is now stable after its public preview and sustained maintainer dogfooding. It adds weekly-only Codex support, redesigns tomorrow planning around explicit weekly-cycle activation, and strengthens state persistence, warm-up locking, daemon recovery, and network reconnection. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
 
 ## Preview
 
@@ -118,11 +112,10 @@ Claude Code / Codex auth files
 
 Keep secrets local. Feishu/Lark app credentials, access tokens, open IDs, chat IDs, local state, and Claude Code / Codex auth files should never be committed to this repository.
 
-## Public Preview Limitations
+## Known Limitations
 
 - A sleeping or powered-off Mac can miss scheduled actions. Clearly stale actions are skipped after wake and reported to the owner.
 - Codex weekly activation uses the latest reset timestamp known when the plan is created. It does not yet re-query at execution time to detect a cycle that the user started manually.
-- The preview has passed the automated suite and maintainer device checks, but broader account, network, and sleep-state coverage is still in progress.
 
 ## Development
 

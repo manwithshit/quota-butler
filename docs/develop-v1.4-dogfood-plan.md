@@ -1,5 +1,7 @@
 # V1.4 Public Preview 测试方案
 
+> 状态：已完成。V1.4 于 2026-07-25 结束 Public Preview，并以 `v1.4.0` 转为稳定版。
+
 V1.4 采用公开测试方式：维护者继续在自己的 Mac 上 dogfood，同时邀请 GitHub 用户安装 beta tag，在更多账户、网络与睡眠环境中共同验证。
 
 ## 1. 发布通道
@@ -126,3 +128,11 @@ git diff --check
 - 构建：通过
 - 本机真实自检：Claude Code 与 Codex 均为 connected
 - 本机真实档位：Claude Code 为 `has-5h`，Codex 为 `weekly-only`
+
+## 9. 正式版验收结果
+
+- 维护者完成持续 dogfood，并确认 V1.4 可以转入稳定通道。
+- 公开测试期没有收到新的 V1.4 P0/P1 问题。
+- 明日计划、守护重启恢复、睡眠迟到保护、飞书长连接恢复和 Codex 周额度状态切换均在真实运行日志中得到验证。
+- 发布前重新通过 14 个测试文件、122 条测试、类型检查、构建、本机 selftest 和 `git diff --check`。
+- 正式版本号：`1.4.0`。

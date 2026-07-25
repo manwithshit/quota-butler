@@ -1,19 +1,19 @@
-name: V1.4 Public Preview 反馈
-description: 报告 V1.4 公开测试版的额度、计划、预热或飞书交互问题
-title: "[V1.4 Preview] "
+name: V1.4 使用反馈
+description: 报告 V1.4 正式版的额度、计划、预热或飞书交互问题
+title: "[V1.4] "
 labels:
-  - v1.4-preview
+  - v1.4
 body:
   - type: markdown
     attributes:
       value: |
-        感谢参与 V1.4 Public Preview。提交前请删除日志中的 token、open_id、chat_id 和其他账号信息。
+        感谢使用 V1.4。提交前请删除日志中的 token、open_id、chat_id 和其他账号信息。
   - type: input
     id: version
     attributes:
       label: 安装版本
-      description: 例如 v1.4.0-beta.1
-      placeholder: v1.4.0-beta.1
+      description: 例如 v1.4.0
+      placeholder: v1.4.0
     validations:
       required: true
   - type: input
