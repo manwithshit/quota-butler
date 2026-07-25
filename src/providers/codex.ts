@@ -1,6 +1,6 @@
 // Codex provider —— 读 ~/.codex/auth.json 的 token → 打 wham/usage → 解析。
 // 移植自 Python providers/codex.py。
-// 窗口按真实时长归类：付费档 primary=5h/secondary=7天；免费档 primary=月度/secondary=null。
+// 窗口按真实时长归类：支持 5h+7天、仅7天、仅月度三种返回形态。
 // 安全红线：token 只留内存。
 
 import { execFile } from 'node:child_process';
@@ -53,11 +53,11 @@ export class CodexProvider implements Provider {
     for (;;) {
       const { status, body, retryAfterMs } = await this.fetchUsageFn(token, accountId);
       if (status === 401) {
-        // 只读感知（allowRefresh=false）下绝不触发 codex exec：免费档会因此烧月额度。
+        // 只读感知（allowRefresh=false）下绝不触发 codex exec：无短窗档位会因此烧长周期额度。
         // 沿用上次快照、标记暂不可用（stale→UNAVAILABLE），待用户主动操作时再刷新。
         if (!allowRefresh) {
           throw new ProviderError(
-            'wham/usage 返回 401：Codex token 过期。本轮为只读感知，跳过 codex exec 刷新（免费档会烧月额度），沿用上次快照并标记暂不可用。',
+            'wham/usage 返回 401：Codex token 过期。本轮为只读感知，跳过 codex exec 刷新（会消耗长周期额度），沿用上次快照并标记暂不可用。',
             'stale',
           );
         }

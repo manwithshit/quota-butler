@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { planningUsageForStatus, usableForPlanning, usableForPlanningAt } from '../src/agent_status.js';
+import { planningUsageForStatus, shouldAllowUsageRefresh, usableForPlanning, usableForPlanningAt } from '../src/agent_status.js';
 import { activePlanIndex, planIsExpired, StateStore, type State } from '../src/state.js';
 import { buildCurrentPlansCard, buildManualWarmupCard } from '../src/notify.js';
 import { AgentState, type AgentStatus } from '../src/agent_status.js';
 import { buildPlan } from '../src/planner.js';
 import type { Usage } from '../src/providers/index.js';
+import { usageTier } from '../src/providers/index.js';
 import type { PlanRequest } from '../src/schedule_flow.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +41,16 @@ describe('usableForPlanning', () => {
       monthly: { utilization: 20, resetsAt: null, windowSeconds: 2592000 },
     };
     expect(usableForPlanning(freeCodex)).toBe(false);
+  });
+
+  it('includes weekly-only Codex and classifies it separately from monthly-only', () => {
+    const weeklyCodex: Usage = {
+      provider: 'codex',
+      fiveHour: null,
+      sevenDay: { utilization: 38, resetsAt: new Date('2026-07-20T04:15:19Z'), windowSeconds: 604800 },
+    };
+    expect(usageTier(weeklyCodex)).toBe('weekly-only');
+    expect(usableForPlanning(weeklyCodex)).toBe(true);
   });
 
   it('allows a depleted weekly quota when it resets before the planned work time', () => {
@@ -94,6 +105,30 @@ describe('usableForPlanning', () => {
 
       expect(usage?.provider).toBe('cc');
       expect(usage?.sevenDay?.utilization).toBe(20);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconstructs weekly-only Codex from a recent snapshot', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T10:00:00'));
+    try {
+      const usage = planningUsageForStatus(
+        { provider: 'codex', state: AgentState.UNAVAILABLE, detail: '只读令牌已过期' },
+        {
+          fiveHourUtil: null,
+          fiveHourResetAt: null,
+          sevenDayUtil: 38,
+          sevenDayResetAt: '2026-07-20T04:15:19.000Z',
+          capturedAt: '2026-07-19T08:00:00.000Z',
+        },
+        new Date('2026-07-20T09:00:00'),
+      );
+
+      expect(usage?.fiveHour).toBeNull();
+      expect(usage?.sevenDay?.utilization).toBe(38);
+      expect(usableForPlanning(usage!)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -179,6 +214,19 @@ describe('usableForPlanning', () => {
   });
 });
 
+describe('Codex sensing refresh policy', () => {
+  it('preserves refresh for active reads and known 5h accounts', () => {
+    expect(shouldAllowUsageRefresh('codex', { sensing: false, knownTiers: { codex: 'weekly-only' } })).toBe(true);
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: { codex: 'has-5h' } })).toBe(true);
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: {} })).toBe(true);
+  });
+
+  it('blocks background refresh for weekly-only and monthly-only accounts', () => {
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: { codex: 'weekly-only' } })).toBe(false);
+    expect(shouldAllowUsageRefresh('codex', { sensing: true, knownTiers: { codex: 'monthly-only' } })).toBe(false);
+  });
+});
+
 describe('planIsExpired', () => {
   it('expires a plan once its work_end has passed', () => {
     const now = new Date('2026-06-23T16:00:00');
@@ -220,6 +268,36 @@ describe('current plans and immediate warmup UX', () => {
     expect(text).toContain('明日计划');
     expect(text).toContain('09:00–16:31');
     expect(text).toContain('10:00–17:31');
+  });
+
+  it('shows the append action only when Codex resets before the plan ends', () => {
+    const plan = {
+      status: 'active',
+      plan_id: 'tomorrow',
+      work_start: '2026-06-24T09:00:00',
+      work_end: '2026-06-24T18:00:00',
+      agents: ['cc'],
+      events: [],
+    };
+    const eligible = JSON.stringify(buildCurrentPlansCard(
+      { '2026-06-24': plan },
+      new Date('2026-06-23T12:00:00'),
+      {
+        '2026-06-24': {
+          at: new Date('2026-06-24T13:01:30'),
+          resetAt: new Date('2026-06-24T13:00:00'),
+          windowKey: 'codex:sevenDay:2026-06-24T13:00:00.000Z',
+        },
+      },
+    ));
+    expect(eligible).toContain('追加 Codex 新周期预热');
+    expect(eligible).toContain('append_codex_weekly_activation');
+
+    const ineligible = JSON.stringify(buildCurrentPlansCard(
+      { '2026-06-24': plan },
+      new Date('2026-06-23T12:00:00'),
+    ));
+    expect(ineligible).not.toContain('追加 Codex 新周期预热');
   });
 
   it('cancels a tomorrow plan whenever the current-plan card offers that cancel button', async () => {
@@ -316,7 +394,7 @@ describe('current plans and immediate warmup UX', () => {
       },
     );
 
-    expect(receipts).toEqual(['❌ 该计划的预热时间已过，请重新生成计划']);
+    expect(receipts).toEqual(['❌ 该计划的执行时间已过，请重新生成计划']);
     expect(state.get().activePlan).toBeNull();
     expect(state.get().plansByDate).toEqual({});
   });
@@ -331,9 +409,40 @@ describe('current plans and immediate warmup UX', () => {
       },
     };
     const whole = JSON.stringify(buildManualWarmupCard(statuses));
-    expect(whole).toContain('Claude Code：7 天额度已耗尽，暂不可预热');
+    expect(whole).toContain('Claude Code：周额度已耗尽，等待下一个周期刷新');
     expect(whole).toContain('Codex：当前 5 小时窗口已在进行中，无需立即预热');
     expect(whole).not.toContain('选择要立即预热');
     expect(whole).not.toContain('暂时没有需要立即预热');
+  });
+
+  it('allows weekly-only Codex activation only after reset and still blocks monthly-only Codex', () => {
+    const weeklyCard = JSON.stringify(buildManualWarmupCard({
+      codex: {
+        provider: 'codex',
+        state: AgentState.CONNECTED,
+        usage: {
+          provider: 'codex',
+          fiveHour: null,
+          sevenDay: { utilization: 23, resetsAt: new Date(Date.now() - 60000), windowSeconds: 604800 },
+        },
+      },
+    }));
+    expect(weeklyCard).toContain('选择要立即预热');
+    expect(weeklyCard).toContain('开启新周期');
+    expect(weeklyCard).toContain('\"provider\":\"codex\"');
+
+    const monthlyCard = JSON.stringify(buildManualWarmupCard({
+      codex: {
+        provider: 'codex',
+        state: AgentState.CONNECTED,
+        usage: {
+          provider: 'codex',
+          fiveHour: null,
+          monthly: { utilization: 20, resetsAt: new Date(Date.now() + 86400000), windowSeconds: 2592000 },
+        },
+      },
+    }));
+    expect(monthlyCard).toContain('只有月度额度，暂不参与预热');
+    expect(monthlyCard).not.toContain('\"provider\":\"codex\"');
   });
 });

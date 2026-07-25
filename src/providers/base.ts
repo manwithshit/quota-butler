@@ -1,6 +1,9 @@
 // Provider 接口与统一数据结构（移植自 Python providers/base.py）。
 // 安全红线：token 只在内存流转，不打印、不写盘、不外传。
 
+import https from 'node:https';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+
 /** 失败归因：让上层精确分类（auth/expired→登录类；其余→暂时不可用），
  *  不再靠错误文案子串匹配（旧 looksLikeAuthError 会把"auth.json 损坏"误判成未登录）。
  *  stale：令牌过期但本轮是只读感知、不允许做会烧额度的刷新——按"暂时不可用"处理，
@@ -36,7 +39,8 @@ export interface WindowUsage {
 /** 一次感知的统一结果。
  *  窗口按真实时长归位：5h / 7天 / 月度。
  *  - CC、付费档 Codex：有 fiveHour（+ sevenDay）。
- *  - 免费档 Codex：只有 monthly（fiveHour=null）——无 5h 窗口可预热/接力。 */
+ *  - 新版 Codex：可能只有 sevenDay（fiveHour=null）。
+ *  - 免费档 Codex：只有 monthly（fiveHour=null）。 */
 export interface Usage {
   provider: string; // "cc" | "codex"
   fiveHour: WindowUsage | null;
@@ -57,13 +61,15 @@ export interface Provider {
   warmup(prompt: string): Promise<string>;
 }
 
-/** 账户档位：免费档 Codex 只有月度窗口（无 5h），付费档/CC 有 5h 窗口。
- *  缓存它，是为了"在成功读过一次后"就能在只读感知时认出免费档，跳过烧额度的刷新。 */
-export type ProviderTier = 'monthly-only' | 'has-5h';
+/** 账户窗口档位。缓存它，是为了在后台只读感知时认出无 5h 的 Codex，
+ *  跳过可能消耗长周期额度的 token 刷新。 */
+export type ProviderTier = 'monthly-only' | 'weekly-only' | 'has-5h';
 
-/** 由一次成功的 usage 推断档位：有 5h 窗口=付费档/CC，否则=免费档（仅月度）。 */
+/** 由一次成功的 usage 推断档位。 */
 export function usageTier(usage: Usage): ProviderTier {
-  return usage.fiveHour ? 'has-5h' : 'monthly-only';
+  if (usage.fiveHour) return 'has-5h';
+  if (usage.sevenDay) return 'weekly-only';
+  return 'monthly-only';
 }
 
 /** GET JSON，返回 status + 原始 body；只在网络/超时失败时抛 ProviderError。
@@ -73,6 +79,10 @@ export async function httpGetJson(
   headers: Record<string, string>,
   timeoutMs: number,
 ): Promise<{ status: number; body: string; retryAfterMs?: number }> {
+  const proxyUrl = proxyFor(url);
+  if (proxyUrl) {
+    return httpGetJsonViaHttpProxy(url, headers, timeoutMs, proxyUrl);
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -84,6 +94,93 @@ export async function httpGetJson(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function proxyFor(url: string): string | null {
+  const target = new URL(url);
+  if (target.protocol !== 'https:') return null;
+  if (isNoProxyHost(target.hostname)) return null;
+  return (
+    process.env.QUOTA_BUTLER_PROXY ||
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy ||
+    null
+  );
+}
+
+function isNoProxyHost(host: string): boolean {
+  const rules = (process.env.NO_PROXY ?? process.env.no_proxy ?? '')
+    .split(',')
+    .map((part) => part.trim().toLowerCase().replace(/^\./, ''))
+    .filter(Boolean);
+  const normalized = host.toLowerCase();
+  return rules.some((rule) => rule === '*' || normalized === rule || normalized.endsWith(`.${rule}`));
+}
+
+async function httpGetJsonViaHttpProxy(
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  proxyUrl: string,
+): Promise<{ status: number; body: string; retryAfterMs?: number }> {
+  let agent: HttpsProxyAgent<string>;
+  try {
+    const proxy = new URL(proxyUrl);
+    if (proxy.protocol !== 'http:' && proxy.protocol !== 'https:') {
+      throw new Error(`不支持的代理协议: ${proxy.protocol}`);
+    }
+    agent = new HttpsProxyAgent(proxy);
+  } catch (err) {
+    throw new ProviderError(`代理配置无效: ${(err as Error).message}`, 'network');
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const done = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const req = https.request(
+      url,
+      {
+        method: 'GET',
+        headers,
+        agent,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        res.once('aborted', () => {
+          done(() => reject(new ProviderError('网络错误: 响应被中断', 'network')));
+        });
+        res.once('error', (err) => {
+          done(() => reject(new ProviderError(`网络错误: ${err.message}`, 'network')));
+        });
+        res.once('end', () => {
+          const retryAfter = res.headers['retry-after'];
+          const retryAfterText = Array.isArray(retryAfter) ? retryAfter[0] : retryAfter;
+          done(() =>
+            resolve({
+              status: res.statusCode ?? 0,
+              body: Buffer.concat(chunks).toString('utf-8'),
+              retryAfterMs: parseRetryAfter(retryAfterText),
+            }),
+          );
+        });
+      },
+    );
+    timer = setTimeout(() => req.destroy(new Error('request timeout')), timeoutMs);
+    req.once('error', (err) => {
+      done(() => reject(new ProviderError(`网络错误: ${err.message}`, 'network')));
+    });
+    req.end();
+  });
 }
 
 export function sleep(ms: number): Promise<void> {

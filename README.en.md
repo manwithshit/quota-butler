@@ -4,7 +4,7 @@
 
 Quota Butler is a local macOS helper for Claude Code and Codex users. It talks to you through a private Feishu/Lark bot chat, but it does not use an LLM for chat completion. The app only runs deterministic quota checks, status reminders, and warm-up scheduling.
 
-Its goal is to help you make better use of the quota you already have: see the 5-hour and 7-day windows, know when they recover, plan tomorrow's heavy usage window, and let your Mac warm up the right tool at the right time.
+Its goal is to help you make better use of the quota you already have: see 5-hour, 7-day, or monthly windows, know when they recover, plan tomorrow's heavy usage window, and let your Mac warm up the right tool at the right time.
 
 ## Choose A Release Channel
 
@@ -19,38 +19,26 @@ npx github:manwithshit/quota-butler run
 To pin or roll back to the current stable snapshot:
 
 ```bash
-npx github:manwithshit/quota-butler#v0.1.0 run
+npx github:manwithshit/quota-butler#v1.4.0 run
 ```
 
-### V1.4 Public Preview
+### V1.4 Stable
 
-V1.4 has passed the automated suite and device-level checks by the maintainer. It adds weekly-only Codex support and redesigns tomorrow planning around explicit weekly-cycle activation.
-
-```bash
-npx github:manwithshit/quota-butler#v1.4.0-beta.1 run
-```
-
-The public preview may still contain edge cases and is not recommended for scheduled actions that must never be missed. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
+V1.4 is now stable after its public preview and sustained maintainer dogfooding. It adds weekly-only Codex support, redesigns tomorrow planning around explicit weekly-cycle activation, and strengthens state persistence, warm-up locking, daemon recovery, and network reconnection. Please report reproducible issues, screenshots, and redacted logs through [GitHub Issues](https://github.com/manwithshit/quota-butler/issues).
 
 ## Preview
 
 ### Quota Status
 
-Quota Butler shows Claude Code and Codex side by side: 5-hour window, 7-day or monthly quota, remaining percentage, and refresh time. The status summary prioritizes the long-term cap, so a depleted 7-day quota is shown as the real limit even when the 5-hour window looks full.
-
-![Quota status](docs/images/quota-status.png)
+Quota Butler shows Claude Code and Codex side by side: 5-hour window, 7-day or monthly quota, remaining percentage, and refresh time. It supports the newer weekly-only Codex quota without misclassifying it as a free monthly tier. The status summary prioritizes the long-term cap, so a depleted 7-day quota is shown as the real limit even when the 5-hour window looks full.
 
 ### Menu And Current Plan
 
 Send `菜单` or `menu` to open the command card. From there you can query quota, view the current plan, trigger an immediate warm-up, or set tomorrow's plan. Current plans are split into today and tomorrow, with clear states for executed and pending warm-ups.
 
-![Menu and current plan](docs/images/menu-and-current-plan.png)
-
 ### Tomorrow Plan
 
-Pick one start time, and Quota Butler selects one available AI tool based on the latest quota state. It generates two warm-up points by default, aiming to make one tool cover around 7.5 hours of focused work, roughly equivalent to two 5-hour windows. You can still adjust the two warm-up times before adopting the plan.
-
-![Tomorrow plan](docs/images/tomorrow-plan.png)
+Pick one start time, and Quota Butler prioritizes Claude Code with two 5-hour warm-up points. Weekly-only Codex needs no daily warm-up while its current cycle is active. An adopted plan offers “Append Codex weekly activation” only when the known weekly reset occurs before that plan ends; the scheduled request then sends the first message that starts the new cycle. If Claude Code is unavailable, the planner falls back according to the Codex weekly-cycle state.
 
 ## Requirements
 
@@ -81,6 +69,8 @@ npx github:manwithshit/quota-butler start
 npx github:manwithshit/quota-butler status
 npx github:manwithshit/quota-butler stop
 ```
+
+If your network requires a proxy, set `QUOTA_BUTLER_PROXY` before starting (for example, `http://127.0.0.1:7890`). Without it, the daemon connects directly.
 
 ## Feishu/Lark Entry
 
@@ -121,6 +111,11 @@ Claude Code / Codex auth files
 ```
 
 Keep secrets local. Feishu/Lark app credentials, access tokens, open IDs, chat IDs, local state, and Claude Code / Codex auth files should never be committed to this repository.
+
+## Known Limitations
+
+- A sleeping or powered-off Mac can miss scheduled actions. Clearly stale actions are skipped after wake and reported to the owner.
+- Codex weekly activation uses the latest reset timestamp known when the plan is created. It does not yet re-query at execution time to detect a cycle that the user started manually.
 
 ## Development
 

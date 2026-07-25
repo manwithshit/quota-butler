@@ -9,6 +9,9 @@ export interface PlanEventRecord {
   kind: string;
   at: string;
   purpose: string;
+  slot?: string;
+  window_reset_at?: string;
+  window_key?: string;
 }
 
 export interface PlanRecord {
@@ -68,6 +71,9 @@ export function planRecord(plan: SchedulePlan): PlanRecord {
       kind: e.kind,
       at: localIso(e.at),
       purpose: e.purpose,
+      ...(e.slot ? { slot: e.slot } : {}),
+      ...(e.windowResetAt ? { window_reset_at: e.windowResetAt.toISOString() } : {}),
+      ...(e.windowKey ? { window_key: e.windowKey } : {}),
     })),
     request: requestToPayloadShape(plan.request),
   };
@@ -93,7 +99,9 @@ export function validatePlanRecord(value: unknown): PlanRecord {
     if (!(SUPPORTED_AGENTS as readonly string[]).includes(String(ev['agent']))) {
       throw new Error(`计划包含不支持的 Agent: ${String(ev['agent'])}`);
     }
-    if (ev['kind'] !== 'warmup') throw new Error(`计划事件类型非法: ${String(ev['kind'])}`);
+    if (ev['kind'] !== 'warmup' && ev['kind'] !== 'weekly-activation') {
+      throw new Error(`计划事件类型非法: ${String(ev['kind'])}`);
+    }
     parseDate(ev['at']);
   }
   return record as unknown as PlanRecord;

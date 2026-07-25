@@ -1,0 +1,60 @@
+name: V1.4 使用反馈
+description: 报告 V1.4 正式版的额度、计划、预热或飞书交互问题
+title: "[V1.4] "
+labels:
+  - v1.4
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢使用 V1.4。提交前请删除日志中的 token、open_id、chat_id 和其他账号信息。
+  - type: input
+    id: version
+    attributes:
+      label: 安装版本
+      description: 例如 v1.4.0
+      placeholder: v1.4.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      description: macOS 版本、Mac 型号和 Node.js 版本
+      placeholder: macOS 15.x / MacBook Air M1 / Node.js 22.x
+    validations:
+      required: true
+  - type: dropdown
+    id: quota_shape
+    attributes:
+      label: Codex 额度形态
+      options:
+        - 仅周额度
+        - 5 小时 + 周额度
+        - 仅月度额度
+        - 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请写明操作时间、点击顺序、计划时间和预期结果
+      placeholder: |
+        1. 在飞书发送“明日计划”
+        2. 设置……
+        3. 实际看到……
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图与脱敏日志
+      description: 可粘贴飞书截图和 ~/.quota-butler/logs/daemon.log 相关片段；请先删除所有凭证和身份信息
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已确认内容中不包含 token、应用凭证、open_id、chat_id 或其他私密信息
+          required: true

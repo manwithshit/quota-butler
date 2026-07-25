@@ -7,6 +7,14 @@ function usage(util: number, resetsAt: Date | null = null): Usage {
   return { provider: 'x', fiveHour: { utilization: util, resetsAt, windowSeconds: 18000 } };
 }
 
+function weeklyUsage(util: number, resetsAt = new Date('2026-06-22T00:00:00Z')): Usage {
+  return {
+    provider: 'codex',
+    fiveHour: null,
+    sevenDay: { utilization: util, resetsAt, windowSeconds: 604800 },
+  };
+}
+
 function req(partial: Partial<PlanRequest>): PlanRequest {
   return {
     targetDate: '2026-06-20',
@@ -43,20 +51,38 @@ describe('buildPlan', () => {
     expect(plan.events.map((e) => hm(e.at))).toEqual(['09:30', '14:31']);
   });
 
-  it('auto uses one agent for a short range even when two available', () => {
+  it('auto defaults to Claude Code when both agents are available', () => {
     const plan = buildPlan(req({ timeMode: 'range', workStart: '09:00', workEnd: '13:00' }), {
       cc: usage(70),
       codex: usage(20),
     });
-    expect(plan.agents).toEqual(['codex']);
-    expect(plan.reason).toContain('只使用 Codex');
+    expect(plan.agents).toEqual(['cc']);
+    expect(plan.reason).toContain('只使用 Claude Code');
   });
 
-  it('both strategy is rejected because one plan only uses one agent', () => {
+  it('weekly-only Codex needs no daily warmup while its weekly cycle is active', () => {
+    const plan = buildPlan(req({ agentStrategy: 'codex' }), { codex: weeklyUsage(38) });
+    expect(plan.agents).toEqual(['codex']);
+    expect(plan.events).toEqual([]);
+    expect(plan.reason).toContain('无需每日预热');
+  });
+
+  it('weekly-only Codex activates once after a reset inside the work range', () => {
+    const plan = buildPlan(
+      req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'codex' }),
+      { codex: weeklyUsage(100, new Date('2026-06-20T13:00:00')) },
+    );
+    expect(plan.events.map((event) => [event.kind, hm(event.at), event.slot])).toEqual([
+      ['weekly-activation', '13:01', 'weekly-activation'],
+    ]);
+    expect(plan.events[0]?.windowKey).toContain('codex:sevenDay:');
+  });
+
+  it('rejects the removed upfront both strategy', () => {
     expect(() => buildPlan(
-      req({ timeMode: 'range', workStart: '09:00', workEnd: '18:00', agentStrategy: 'both' }),
-      { cc: usage(20), codex: usage(30) },
-    )).toThrow('一次只编排一个');
+      req({ agentStrategy: 'both' }),
+      { cc: usage(20), codex: weeklyUsage(38) },
+    )).toThrow('先采用 Claude Code');
   });
 
   it('keeps warmups from the request instead of recalculating from a cross-midnight range', () => {
