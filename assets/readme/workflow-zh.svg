@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="570" viewBox="0 0 1200 570" role="img" aria-labelledby="title desc">
+  <title id="title">额度管家工作流程</title>
+  <desc id="desc">飞书私聊把确定性指令交给 Mac 本地的额度管家；额度管家读取本地 Claude Code 和 Codex CLI 状态，返回卡片并执行已采用的预热计划。</desc>
+
+  <rect width="1200" height="570" rx="28" fill="#F5F8FC"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <text x="64" y="68" fill="#0F172A" font-size="40" font-weight="800">一次指令，四步完成</text>
+    <text x="64" y="104" fill="#64748B" font-size="20">所有判断与状态都在 Mac 本地完成；飞书/Lark 只负责私聊交互与卡片回执。</text>
+
+    <g id="step-1" transform="translate(64 148)">
+      <rect width="246" height="246" rx="22" fill="#FFFFFF" stroke="#C9D7EA" stroke-width="2"/>
+      <circle cx="40" cy="40" r="22" fill="#4C8DFF"/>
+      <text x="40" y="48" text-anchor="middle" fill="#FFFFFF" font-size="22" font-weight="800">1</text>
+      <text x="28" y="96" fill="#0F172A" font-size="27" font-weight="800">发送指令</text>
+      <text x="28" y="135" fill="#334155" font-size="20">额度 / 菜单</text>
+      <text x="28" y="168" fill="#334155" font-size="20">查看当前计划</text>
+      <text x="28" y="201" fill="#334155" font-size="20">设置明日计划</text>
+      <text x="28" y="228" fill="#64748B" font-size="17">飞书 / Lark 私聊</text>
+    </g>
+
+    <g id="step-2" transform="translate(340 148)">
+      <rect width="246" height="246" rx="22" fill="#0E1930"/>
+      <circle cx="40" cy="40" r="22" fill="#4C8DFF"/>
+      <text x="40" y="48" text-anchor="middle" fill="#FFFFFF" font-size="22" font-weight="800">2</text>
+      <text x="28" y="96" fill="#F8FAFC" font-size="27" font-weight="800">本地读取</text>
+      <rect x="28" y="121" width="190" height="38" rx="10" fill="#182A4B"/>
+      <text x="43" y="147" fill="#BFD1EA" font-size="18" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Claude Code CLI</text>
+      <rect x="28" y="169" width="190" height="38" rx="10" fill="#182A4B"/>
+      <text x="43" y="195" fill="#BFD1EA" font-size="18" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">Codex CLI</text>
+      <text x="28" y="228" fill="#8FA8CF" font-size="17">不把聊天交给模型</text>
+    </g>
+
+    <g id="step-3" transform="translate(616 148)">
+      <rect width="246" height="246" rx="22" fill="#FFFFFF" stroke="#C9D7EA" stroke-width="2"/>
+      <circle cx="40" cy="40" r="22" fill="#45B98A"/>
+      <text x="40" y="48" text-anchor="middle" fill="#FFFFFF" font-size="22" font-weight="800">3</text>
+      <text x="28" y="96" fill="#0F172A" font-size="27" font-weight="800">确定性判断</text>
+      <text x="28" y="135" fill="#334155" font-size="20">识别额度类型</text>
+      <text x="28" y="168" fill="#334155" font-size="20">计算恢复时间</text>
+      <text x="28" y="201" fill="#334155" font-size="20">生成预热节点</text>
+      <text x="28" y="228" fill="#64748B" font-size="17">同样输入得到同样计划</text>
+    </g>
+
+    <g id="step-4" transform="translate(892 148)">
+      <rect width="244" height="246" rx="22" fill="#FFF9EC" stroke="#E8CE96" stroke-width="2"/>
+      <circle cx="40" cy="40" r="22" fill="#D49A2B"/>
+      <text x="40" y="48" text-anchor="middle" fill="#FFFFFF" font-size="22" font-weight="800">4</text>
+      <text x="28" y="96" fill="#0F172A" font-size="27" font-weight="800">卡片与执行</text>
+      <text x="28" y="135" fill="#334155" font-size="20">返回额度状态</text>
+      <text x="28" y="168" fill="#334155" font-size="20">提醒恢复窗口</text>
+      <text x="28" y="201" fill="#334155" font-size="20">按计划真实预热</text>
+      <text x="28" y="228" fill="#80540B" font-size="17">执行结果发送回执</text>
+    </g>
+
+    <g id="connectors" stroke="#89A3C5" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M310 271H330"/>
+      <path d="M324 263L332 271L324 279"/>
+      <path d="M586 271H606"/>
+      <path d="M600 263L608 271L600 279"/>
+      <path d="M862 271H882"/>
+      <path d="M876 263L884 271L876 279"/>
+    </g>
+
+    <g id="local-boundary" transform="translate(64 438)">
+      <rect width="1072" height="72" rx="18" fill="#E7EEF8"/>
+      <circle cx="36" cy="36" r="12" fill="#45B98A"/>
+      <text x="62" y="33" fill="#1E293B" font-size="20" font-weight="700">本地边界</text>
+      <text x="62" y="56" fill="#52657D" font-size="17">应用凭证、访问令牌、用户标识、计划状态和 CLI 登录信息都不进入仓库。</text>
+    </g>
+  </g>
+</svg>
