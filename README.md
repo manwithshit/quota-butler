@@ -3,8 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="./assets/readme/hero-zh.svg" width="100%" alt="额度管家：把 Claude Code 和 Codex 的额度窗口变成看得见、能提醒、可安排的工作时间">
+  <img src="./assets/readme/hero-portfolio.webp" width="100%" alt="quota-butler — 项目封面与功能示意">
 </p>
+<p align="center"><sub>封面为 AI 绘制的功能示意，实际界面请看下方真实截图。</sub></p>
 
 额度管家是一个运行在 Mac 本地、通过飞书/Lark 私聊交互的 Claude Code / Codex 额度助手。它不接大模型聊天，也不会把你的聊天消息发给模型推理；它只做确定性的额度查询、状态提醒和预热计划编排。
 

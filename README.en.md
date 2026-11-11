@@ -3,8 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="./assets/readme/hero-en.svg" width="100%" alt="Quota Butler turns Claude Code and Codex quota windows into visible, scheduled working time">
+  <img src="./assets/readme/hero-portfolio.webp" width="100%" alt="quota-butler — illustrated project cover">
 </p>
+<p align="center"><sub>AI-illustrated cover; see the real screenshots below for the actual interface.</sub></p>
 
 Quota Butler is a local macOS helper for Claude Code and Codex users. It talks to you through a private Feishu/Lark bot chat, but it does not use an LLM for chat completion or forward your chat messages for model reasoning. It only runs deterministic quota checks, status reminders, and warm-up scheduling.
 
